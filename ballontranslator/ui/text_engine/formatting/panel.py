@@ -1,6 +1,8 @@
 from dataclasses import replace
 from typing import Iterable, Optional
 
+import os.path as osp
+
 from qtpy.QtWidgets import (
     QApplication,
     QComboBox,
@@ -14,6 +16,8 @@ from qtpy.QtWidgets import (
     QToolTip,
     QVBoxLayout,
     QWidget,
+    QTextEdit,
+    QPlainTextEdit,
 )
 from qtpy.QtCore import QSignalBlocker, Signal, Qt
 from qtpy.QtGui import (
@@ -27,6 +31,7 @@ from qtpy.QtGui import (
     QPen,
     QPixmap,
     QTextCursor,
+    QTextCharFormat,
 )
 
 from ballontranslator.utils import shared
@@ -359,31 +364,290 @@ class EmphasisToolButton(QToolButton):
         painter.drawLine(arrow_x, arrow_y + 2, arrow_x + 3, arrow_y - 1)
 
 
+class _PSDelimBtn(QPushButton):
+    """Botón de delimitador PS — acepta setChecked/isChecked sin efecto
+    visual para no romper código existente que los invoca sobre boldBtn, etc."""
+    def setChecked(self, *args):
+        pass
+    def isChecked(self):
+        return False
+
+
 class FormatGroupBtn(QFrame):
     param_changed = Signal(str, bool)
+    # Se emite cada vez que se aplica o quita un delimitador.
+    # mainwindow.py la conecta a canvas.setProjSaveState(True) para que
+    # el título muestre "sin guardar" y conditional_save guarde el JSON
+    # al cambiar de página, aunque el undo stack no haya registrado el cambio.
+    delim_applied = Signal()
+
+    # Delimitadores PS (NavajaCRG / RellenaGlobos3.jsx)
+    _DELIMITADORES = [
+        ("B",  "++",  "Negrita (PS): ++texto++",       "bold.svg"),
+        ("I",  "+",   "Cursiva (PS): +texto+",          "italic.svg"),
+        ("U",  "__",  "Subrayado (PS): __texto__",      "underline.svg"),
+        ("BI", "+++", "Negrita+Cursiva (PS): +++texto+++", "bold-italic.svg"),
+        ("S",  "~~",  "Tachado (PS): ~~texto~~",        "strikethrough.svg"),
+        ("x²", "^",   "Superíndice (PS): ^texto^",     "superscript.svg"),
+        ("x₂", "¬",   "Subíndice (PS): ¬texto¬",       "subscript.svg"),
+    ]
+
+    # Directorio donde están los SVG de delimitadores (usa shared para ruta correcta)
+    @classmethod
+    def _get_icon_dir(cls):
+        from ballontranslator.utils import shared
+        return osp.join(shared.RESOURCE_DIR, 'delimitadores')
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.italicBtn = QFontChecker(self)
-        self.italicBtn.setObjectName("FontItalicChecker")
-        self.italicBtn.clicked.connect(self.setItalic)
-        self.underlineBtn = QFontChecker(self)
-        self.underlineBtn.setObjectName("FontUnderlineChecker")
-        self.underlineBtn.clicked.connect(self.setUnderline)
-        self.emphasisBtn = EmphasisToolButton(self)
+
+        # Widget que tenía el foco antes de que el botón lo capturara (modo PS)
+        self._last_editor = None
+        # Referencia al canvas, asignada por mainwindow.py vía set_canvas()
+        # (necesaria para el modo BT íntegro, que opera sobre el TextBlkItem en edición)
+        self._canvas = None
+        # True = modo Photoshop (delimitadores). False = modo edición íntegra en BT.
+        self._ps_mode = True
+        QApplication.instance().focusChanged.connect(self._on_focus_changed)
+
         hlayout = QHBoxLayout(self)
-        hlayout.addWidget(self.italicBtn)
-        hlayout.addWidget(self.underlineBtn)
+        hlayout.setSpacing(2)
+        hlayout.setContentsMargins(0, 0, 0, 0)
+
+        # Crear los 7 botones con icono SVG cuando esté disponible
+        icon_dir = self._get_icon_dir()
+        for label, delim, tooltip, icon_file in self._DELIMITADORES:
+            btn = _PSDelimBtn(self)
+            btn.setObjectName("PSDelimBtn")
+            btn.setToolTip(self.tr(tooltip))
+            btn.setFixedSize(28, 22)
+            btn.setProperty('ps_delim', delim)
+            btn.setProperty('style_label', label)
+            btn.clicked.connect(self._on_style_btn_clicked)
+
+            icon_path = osp.join(icon_dir, icon_file)
+            if osp.isfile(icon_path):
+                btn.setIcon(QIcon(icon_path))
+                btn.setIconSize(btn.size().__class__(18, 16))
+            else:
+                btn.setText(label)
+
+            # Referencias nombradas para compatibilidad con código existente
+            if label == "B":
+                self.boldBtn = btn
+            elif label == "I":
+                self.italicBtn = btn
+            elif label == "U":
+                self.underlineBtn = btn
+
+            hlayout.addWidget(btn)
+
+        # Botón de marcas de énfasis (upstream 1.5.12): se añade tal cual a
+        # nuestra barra, sin integrarlo en el sistema de delimitadores PS ni
+        # en el modo BT íntegro, ya que es una función independiente
+        # (marcas de énfasis tipográfico, p.ej. bouten/kenten japonés).
+        self.emphasisBtn = EmphasisToolButton(self)
         hlayout.addWidget(self.emphasisBtn)
-        hlayout.setSpacing(0)
-        hlayout.setContentsMargins(8, 8, 8, 8)
+
+    def _on_focus_changed(self, old, new):
+        """Guarda el último QTextEdit/QPlainTextEdit que tuvo el foco."""
+        if isinstance(old, (QTextEdit, QPlainTextEdit)):
+            self._last_editor = old
+
+    def set_canvas(self, canvas):
+        """Asignado una vez desde mainwindow.py. Necesario para el modo BT íntegro."""
+        self._canvas = canvas
+
+    def set_ps_mode(self, is_ps: bool):
+        """Alterna entre modo Photoshop (delimitadores) y modo edición íntegra en BT."""
+        self._ps_mode = is_ps
+
+    def _on_style_btn_clicked(self):
+        btn = self.sender()
+        label = btn.property('style_label')
+        if self._ps_mode:
+            delim = btn.property('ps_delim')
+            if delim:
+                self._wrap_selection_with_delim(delim)
+        else:
+            self._apply_native_style(label)
+
+    def _wrap_selection_with_delim(self, delim: str):
+        """
+        Envuelve el texto seleccionado en el editor que tenía el foco
+        con `delim` a ambos lados (delimitadores PS para RellenaGlobos3.jsx).
+        Toggle: si la selección ya está envuelta, quita los delimitadores.
+        Sin selección: muestra aviso pidiendo que seleccione texto primero.
+        """
+        from qtpy.QtWidgets import QToolTip
+        from qtpy.QtGui import QCursor
+
+        w = self._last_editor
+
+        # Proteger contra objeto Qt ya destruido (puede ocurrir al cambiar de página)
+        if w is not None:
+            try:
+                w.isVisible()  # lanza RuntimeError si el objeto C++ fue eliminado
+            except RuntimeError:
+                self._last_editor = None
+                w = None
+
+        if w is None or not isinstance(w, (QTextEdit, QPlainTextEdit)):
+            QToolTip.showText(
+                QCursor.pos(),
+                self.tr("Selecciona primero el texto a delimitar en un globo"),
+                None, msecShowTime=2500
+            )
+            return
+
+        cursor = w.textCursor()
+        n = len(delim)
+
+        if not cursor.hasSelection():
+            QToolTip.showText(
+                QCursor.pos(),
+                self.tr("Selecciona primero el texto a delimitar"),
+                None, msecShowTime=2500
+            )
+            return
+
+        inicio = cursor.selectionStart()
+        fin = cursor.selectionEnd()
+        texto_sel = cursor.selectedText()
+        doc_text = w.toPlainText()
+
+        ya_envuelto = (
+            doc_text[max(0, inicio - n):inicio] == delim and
+            doc_text[fin:fin + n] == delim
+        )
+
+        if ya_envuelto:
+            # Quitar delimitadores
+            cursor.setPosition(inicio - n)
+            cursor.setPosition(fin + n, cursor.MoveMode.KeepAnchor)
+            cursor.insertText(texto_sel)
+            cursor.setPosition(inicio - n)
+            cursor.setPosition(inicio - n + len(texto_sel),
+                               cursor.MoveMode.KeepAnchor)
+        else:
+            cursor.insertText(delim + texto_sel + delim)
+            cursor.setPosition(inicio + n)
+            cursor.setPosition(inicio + n + len(texto_sel),
+                               cursor.MoveMode.KeepAnchor)
+
+        w.setTextCursor(cursor)
+        w.setFocus()
+        self.delim_applied.emit()
+
+    # ── Modo BT íntegro: formato real sobre el TextBlkItem en edición en canvas ──
+    _NATIVE_ATTRS = {
+        "B":  ("bold",),
+        "I":  ("italic",),
+        "U":  ("underline",),
+        "BI": ("bold", "italic"),
+        "S":  ("strike",),
+        "x²": ("superscript",),
+        "x₂": ("subscript",),
+    }
+
+    def _active_canvas_item(self):
+        """Devuelve el TextBlkItem que se está editando activamente en el canvas,
+        o None si no hay ninguno (nada seleccionado, o canvas aún no asignado)."""
+        if self._canvas is None:
+            return None
+        item = getattr(self._canvas, 'editing_textblkitem', None)
+        if item is None:
+            return None
+        try:
+            is_editing = item.isEditing()
+        except RuntimeError:
+            # El objeto C++ pudo haber sido destruido (cambio de página, etc.)
+            return None
+        return item if is_editing else None
+
+    @staticmethod
+    def _attr_active(cfmt: QTextCharFormat, attr: str) -> bool:
+        if attr == "bold":
+            return cfmt.fontWeight() >= QFont.Weight.Bold.value
+        if attr == "italic":
+            return cfmt.fontItalic()
+        if attr == "underline":
+            return cfmt.fontUnderline()
+        if attr == "strike":
+            return cfmt.fontStrikeOut()
+        if attr == "superscript":
+            return cfmt.verticalAlignment() == QTextCharFormat.VerticalAlignment.AlignSuperScript
+        if attr == "subscript":
+            return cfmt.verticalAlignment() == QTextCharFormat.VerticalAlignment.AlignSubScript
+        return False
+
+    def _apply_native_style(self, label: str):
+        """
+        Aplica el estilo real (no delimitadores) sobre el TextBlkItem que se esté
+        editando en el canvas: a la selección de texto si la hay, o al globo
+        completo si no hay texto seleccionado (comportamiento de set_selected=True
+        ya implementado en item.py).
+        """
+        from qtpy.QtWidgets import QToolTip
+        from qtpy.QtGui import QCursor
+
+        item = self._active_canvas_item()
+        if item is None:
+            QToolTip.showText(
+                QCursor.pos(),
+                self.tr("Edita un globo en el canvas para aplicar formato BT"),
+                None, msecShowTime=2500
+            )
+            return
+
+        attrs = self._NATIVE_ATTRS.get(label)
+        if not attrs:
+            return
+
+        cfmt = item.get_selection_char_format()
+        turn_on = not all(self._attr_active(cfmt, attr) for attr in attrs)
+
+        for attr in attrs:
+            if attr == "bold":
+                weight = QFont.Weight.Bold.value if turn_on else QFont.Weight.Normal.value
+                item.setFontWeight(weight, set_selected=True)
+            elif attr == "italic":
+                item.setFontItalic(turn_on, set_selected=True)
+            elif attr == "underline":
+                item.setFontUnderline(turn_on, set_selected=True)
+            elif attr == "strike":
+                item.setFontStrikeOut(turn_on, set_selected=True)
+            elif attr == "superscript":
+                item.setSuperscript(turn_on, set_selected=True)
+            elif attr == "subscript":
+                item.setSubscript(turn_on, set_selected=True)
+
+        item.updateBlkFormat()
+        self.delim_applied.emit()
+
+    # ── Compatibilidad con código existente que llama a setBold/setItalic ──
+    def setBold(self):
+        if self._ps_mode:
+            self._wrap_selection_with_delim("++")
+        else:
+            self._apply_native_style("B")
 
     def setItalic(self):
-        self.param_changed.emit('italic', self.italicBtn.isChecked())
+        if self._ps_mode:
+            self._wrap_selection_with_delim("+")
+        else:
+            self._apply_native_style("I")
 
     def setUnderline(self):
-        self.param_changed.emit('underline', self.underlineBtn.isChecked())
-    
+        if self._ps_mode:
+            self._wrap_selection_with_delim("__")
+        else:
+            self._apply_native_style("U")
+
+    # ── Stubs para compatibilidad (mainwindow.py líneas 491-493) ───────────
+    def setChecked(self, *args):
+        pass
+
 
 class FontSizeBox(QFrame):
     param_changed = Signal(str, float)
@@ -730,9 +994,24 @@ class FontFormatPanel(Widget):
         self.formatBtnGroup = FormatGroupBtn(self)
         self.formatBtnGroup.param_changed.connect(self.on_param_changed)
 
-        self.verticalChecker = QFontChecker(self)
+        self.verticalChecker = QPushButton(self)
         self.verticalChecker.setObjectName("FontVerticalChecker")
+        self.verticalChecker.setCheckable(True)
+        self.verticalChecker.setFixedSize(28, 22)
+        _vertical_icon_path = osp.join(FormatGroupBtn._get_icon_dir(), 'letra_t_flecha.svg')
+        if osp.isfile(_vertical_icon_path):
+            self.verticalChecker.setIcon(QIcon(_vertical_icon_path))
+            self.verticalChecker.setIconSize(self.verticalChecker.size().__class__(18, 16))
         self.verticalChecker.clicked.connect(lambda : self.on_param_changed('vertical', self.verticalChecker.isChecked()))
+
+        # Interruptor de modo: Photoshop (delimitadores) vs edición íntegra en BT (formato real)
+        self.psModeToggle = QPushButton(self)
+        self.psModeToggle.setObjectName("PSModeToggle")
+        self.psModeToggle.setCheckable(True)
+        self.psModeToggle.setFixedSize(28, 22)
+        self.psModeToggle.setChecked(C.pcfg.format_ps_mode)
+        self.psModeToggle.clicked.connect(self.on_psmode_toggle_clicked)
+        self.formatBtnGroup.set_ps_mode(C.pcfg.format_ps_mode)
 
         self._tate_chu_yoko_tooltip = self.tr(
             'Combine the selected text into one upright vertical cell'
@@ -755,6 +1034,11 @@ class FontFormatPanel(Widget):
                 'standard_vertical_roman_alignment', checked
             )
         )
+
+        # Se llama aquí (y no justo tras crear psModeToggle) porque
+        # _update_psmode_toggle_label también oculta/muestra
+        # tateChuYokoChecker/romanAlignmentChecker, que deben existir ya.
+        self._update_psmode_toggle_label()
 
         self.letterSpacingBox = SizeComboBox([0, 10], "letter_spacing", self)
         self.letterSpacingBox.setObjectName("FontFormatSizeBox")
@@ -854,6 +1138,7 @@ class FontFormatPanel(Widget):
         hl2.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hl2.addWidget(self.alignBtnGroup)
         hl2.addWidget(self.formatBtnGroup)
+        hl2.addWidget(self.psModeToggle)
         vertical_layout = QHBoxLayout()
         vertical_layout.addWidget(self.verticalChecker)
         vertical_layout.addWidget(self.tateChuYokoChecker)
@@ -891,6 +1176,35 @@ class FontFormatPanel(Widget):
 
         self.focusOnColorDialog = False
         C.active_format = self.global_format
+
+    def _update_psmode_toggle_label(self):
+        if self.psModeToggle.isChecked():
+            self.psModeToggle.setText("PS")
+            self.psModeToggle.setToolTip(self.tr(
+                "Modo Photoshop: los botones de estilo insertan delimitadores "
+                "(++, +, __, etc.) para RellenaGlobos3.jsx. Clic para cambiar a "
+                "modo edición íntegra en BT."
+            ))
+            # En modo PS el texto vertical no aplica: se oculta.
+            self.verticalChecker.setVisible(False)
+            self.tateChuYokoChecker.setVisible(False)
+            self.romanAlignmentChecker.setVisible(False)
+        else:
+            self.psModeToggle.setText("BT")
+            self.psModeToggle.setToolTip(self.tr(
+                "Modo edición íntegra en BT: los botones de estilo aplican formato "
+                "real (negrita/cursiva/etc.) directamente sobre el globo en el canvas. "
+                "Clic para cambiar a modo Photoshop."
+            ))
+            self.verticalChecker.setVisible(True)
+            self.tateChuYokoChecker.setVisible(True)
+            self.romanAlignmentChecker.setVisible(True)
+
+    def on_psmode_toggle_clicked(self):
+        is_ps = self.psModeToggle.isChecked()
+        C.pcfg.format_ps_mode = is_ps
+        self.formatBtnGroup.set_ps_mode(is_ps)
+        self._update_psmode_toggle_label()
 
     def global_mode(self):
         return id(C.active_format) == id(self.global_format)
