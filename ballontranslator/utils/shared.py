@@ -87,7 +87,8 @@ BOTTOMBAR_HEIGHT = 32
 TITLEBAR_HEIGHT = 30
 
 PAGELIST_THUMBNAIL_MAXNUM = 100
-PAGELIST_THUMBNAIL_SIZE = 48
+PAGELIST_THUMBNAIL_SIZE = 62
+PAGE_LIST_PANE_DEFAULT_WIDTH = PAGELIST_THUMBNAIL_SIZE + 120
 
 FLAG_QT6 = True
 
@@ -101,11 +102,11 @@ MAX_NUM_LOG = 7
 TRANSLATE_DIR = osp.join(RESOURCE_DIR, 'translate')
 DISPLAY_LANGUAGE_MAP = {
     "English": "English",
-    "简体中文": "zh_CN",
-    "繁體中文": "zh_TW",
-    "Русский": "ru_RU",
+    "Chino": "zh_CN",
+    "Twain": "zh_TW",
+    "Ruso": "ru_RU",
     "Português (Brasil)": "pt_BR",
-    "한국어": "ko_KR",
+    "Koreano": "ko_KR",
     "Español": "es_MX",
     "Hungarian": "hu_HU",
     "Français": "fr_FR"
@@ -157,6 +158,7 @@ check_local_file_hash = True
 
 FONT_REGISTRY = None
 FONT_FAMILIES: set = None
+CUSTOM_FONTS = []
 # Windows 自带的老旧字体：渲染时可能触发 DirectWrite CreateFontFaceFromHDC 告警
 LEGACY_FONTS = frozenset({
     "MS Sans Serif", "MS Serif", "Small Fonts",
