@@ -684,6 +684,13 @@ class ProjImgTrans:
         if set_img_failed:
             if len(self.pages) > 0:
                 self.set_current_img_byidx(0)
+
+        # Restaurar idiomas guardados en el JSON del proyecto
+        if 'translate_source' in proj_dict and proj_dict['translate_source']:
+            pcfg.module.translate_source = proj_dict['translate_source']
+        if 'translate_target' in proj_dict and proj_dict['translate_target']:
+            pcfg.module.translate_target = proj_dict['translate_target']
+
         self._load_identity = object()
 
     def get_page_progress(self, pagename: str):
@@ -873,6 +880,8 @@ class ProjImgTrans:
             'pages': pages,
             'current_img': self.current_img,
             'image_info': image_info,
+            'translate_source': pcfg.module.translate_source,
+            'translate_target': pcfg.module.translate_target,
         }
 
     def read_img(self, imgname: str) -> np.ndarray:
@@ -1182,4 +1191,4 @@ def gen_ballon_cuts(cuts_dir: str, imgpath: str, blk_list: List[TextBlock], resi
         cuts_path_list.append(cut_path)
         cut_width_list.append(width)
 
-    return cuts_path_list, cut_width_list
+    return cuts_path_list, cut_width_list 
