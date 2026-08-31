@@ -14,7 +14,7 @@ from qtpy.QtWidgets import (
     QToolButton,
     QVBoxLayout,
 )
-from qtpy.QtCore import QEvent, QPoint, QSize, Qt, QUrl, Signal
+from qtpy.QtCore import QEvent, QPoint, QSize, Qt, QUrl, Signal, QObject
 from qtpy.QtGui import (
     QActionGroup,
     QDesktopServices,
@@ -46,6 +46,78 @@ if shared.FLAG_QT6:
     from qtpy.QtGui import QAction
 else:
     from qtpy.QtWidgets import QAction
+
+# resources/paneles/ vive en la raíz del repo, junto a la carpeta ballontranslator/
+# este archivo está en ballontranslator/ui/mainwindowbars.py -> subimos 3 niveles.
+_REPO_ROOT = osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__))))
+PANEL_ICONS_DIR = osp.join(_REPO_ROOT, 'resources', 'paneles')
+
+
+def _apply_panel_icon(btn: QPushButton, filename: str, fallback_text: str):
+    """Pone el icono PNG de resources/paneles/ en el botón, en modo 'plano'
+    (sin marco ni fondo de botón), igual que el icono de ajustes (engranaje).
+    Si el archivo no existe (por ejemplo, en un checkout sin esa carpeta),
+    cae de vuelta al texto corto para no dejar el botón en blanco."""
+    icon_path = osp.join(PANEL_ICONS_DIR, filename)
+    if osp.exists(icon_path):
+        btn.setIcon(QIcon(icon_path))
+        icon_side = max(LEFTBTN_WIDTH - 0, 16)
+        btn.setIconSize(QSize(icon_side, icon_side))
+        btn.setText('')
+        btn.setFlat(True)
+        btn.setStyleSheet(
+            "QPushButton { border: none; background: transparent; border-radius: 4px; }"
+            "QPushButton:hover { background: rgba(128, 128, 128, 40); }"
+            "QPushButton:pressed { background: rgba(128, 128, 128, 70); }"
+        )
+    else:
+        btn.setText(fallback_text)
+
+
+class _IconoHoverFilter(QObject):
+    """Event filter genérico: cambia el icono de un botón al pasar el cursor
+    por encima (hover) y lo devuelve al soltar. Funciona igual con QPushButton
+    y QToolButton, sin tener que subclasar cada botón. Se usa en vez de un
+    ':hover' en QSS porque el icono puesto con setIcon() no se repinta de
+    forma fiable por CSS entre plataformas."""
+    def __init__(self, boton, icono_normal: QIcon, icono_hover: QIcon):
+        super().__init__(boton)
+        self._boton = boton
+        self._normal = icono_normal
+        self._hover = icono_hover
+
+    def eventFilter(self, obj, event):
+        if obj is self._boton:
+            if event.type() == QEvent.Enter:
+                self._boton.setIcon(self._hover)
+            elif event.type() == QEvent.Leave:
+                self._boton.setIcon(self._normal)
+        return False
+
+
+def _instalar_icono_hover(boton, nombre_normal: str, nombre_hover: str, icon_size: int = None):
+    """Instala en `boton` un icono de resources/paneles/ que cambia al pasar
+    el cursor por encima. Si falta cualquiera de los dos PNG, no hace nada
+    (para no dejar el botón roto por un archivo que aún no existe)."""
+    ruta_normal = osp.join(PANEL_ICONS_DIR, nombre_normal)
+    ruta_hover = osp.join(PANEL_ICONS_DIR, nombre_hover)
+    if not (osp.exists(ruta_normal) and osp.exists(ruta_hover)):
+        return
+    icono_normal = QIcon(ruta_normal)
+    icono_hover = QIcon(ruta_hover)
+    lado = icon_size or max(LEFTBTN_WIDTH - 0, 16)
+    boton.setIcon(icono_normal)
+    boton.setIconSize(QSize(lado, lado))
+    # Si el botón tiene un background-image puesto por stylesheet.css (p. ej.
+    # el propio proyecto.png de origen), se queda por debajo del icono y se
+    # ve "doble". Se neutraliza sin tocar el resto de estilos del botón.
+    boton.setStyleSheet((boton.styleSheet() or '') + ' background-image: none;')
+    filtro = _IconoHoverFilter(boton, icono_normal, icono_hover)
+    boton.installEventFilter(filtro)
+    # referencia fuerte para que el garbage collector de Python no se lleve
+    # el event filter por delante mientras el botón siga vivo
+    boton._hover_filter_ref = filtro
+
 
 class ShowPageListChecker(QCheckBox):
     ...
@@ -104,6 +176,7 @@ class LeftBar(Widget):
         self.setFixedWidth(LEFTBAR_WIDTH)
         self.showPageListLabel = ShowPageListChecker()
         self.showPageListLabel.setObjectName('ShowPageListChecker')
+        self.showPageListLabel.setToolTip(self.tr('Mostrar/ocultar la lista de páginas'))
 
         self.globalSearchChecker = QCheckBox()
         self.globalSearchChecker.setObjectName('GlobalSearchChecker')
@@ -111,10 +184,12 @@ class LeftBar(Widget):
 
         self.imgTransChecker = StateChecker('imgtrans')
         self.imgTransChecker.setObjectName('ImgTransChecker')
+        self.imgTransChecker.setToolTip(self.tr('Ir al editor de traducción de imagen'))
         self.imgTransChecker.checked.connect(self.stateCheckerChanged)
         
         self.configChecker = StateChecker('config', uncheckable=True)
         self.configChecker.setObjectName('ConfigChecker')
+        self.configChecker.setToolTip(self.tr('Ajustes / configuración'))
         self.configChecker.checked.connect(self.stateCheckerChanged)
         self.configChecker.unchecked.connect(self.stateCheckerChanged)
 
@@ -149,6 +224,7 @@ class LeftBar(Widget):
 
         self.openBtn = OpenBtn()
         self.openBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.openBtn.setToolTip(self.tr('Abrir carpeta o proyecto...'))
 
         openMenu = QMenu(self.openBtn)
         # Keep submenu ownership aligned with the visual popup chain for Wayland.
@@ -168,17 +244,81 @@ class LeftBar(Widget):
         ])
         self.openBtn.setMenu(openMenu)
         self.openBtn.setPopupMode(QToolButton.InstantPopup)
-    
-        self.runImgtransBtn = QToolButton(self)
-        self.runImgtransBtn.setObjectName('LeftBarRunButton')
-        self.runImgtransBtn.setIcon(QIcon(themed_icon_path('run.svg')))
-        self.runImgtransBtn.setIconSize(QSize(LEFTBTN_WIDTH + 3, LEFTBTN_WIDTH + 3))
-        self.runImgtransBtn.setFixedSize(LEFTBTN_WIDTH + 4, LEFTBTN_WIDTH + 4)
-        self.runImgtransBtn.setToolTip('{} (F5)'.format(self.tr('Run')))
+
+        # Se mantiene como QPushButton (no QToolButton) porque _apply_panel_icon
+        # usa setFlat(), que no existe en QToolButton — así se preservan tanto el
+        # icono propio (run-all.png) como las mejoras de la 1.5.8 (atajo F5,
+        # nombre accesible, señal de clase run_imgtrans_clicked emitida de verdad).
+        self.runImgtransBtn = QPushButton()
+        self.runImgtransBtn.setObjectName('RunButton')
+        _apply_panel_icon(self.runImgtransBtn, 'run-all.png', self.tr('Run'))
+        self.runImgtransBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.runImgtransBtn.setToolTip('{} (F5)'.format(self.tr('Ejecutar en todas las páginas')))
         self.runImgtransBtn.setAccessibleName(self.tr('Run'))
         self.runImgtransBtn.setShortcut(QKeySequence('F5'))
         self.runImgtransBtn.clicked.connect(self.run_imgtrans_clicked.emit)
-        
+
+        # RPG — ejecutar detección+traducción solo en la página activa
+        self.runPageBtn = QPushButton()
+        self.runPageBtn.setObjectName('RunPageButton')
+        _apply_panel_icon(self.runPageBtn, 'run-page.png', self.tr('RPG'))
+        _instalar_icono_hover(self.runPageBtn, 'run-page.png', 'run-page-active.png')
+        self.runPageBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.runPageBtn.setToolTip(self.tr('Ejecutar en la página activa'))
+        self.run_page_clicked = self.runPageBtn.clicked
+
+        # Coherencias — comprueba la integridad del imgtrans_TomoXX.json activo
+        # (páginas de otro tomo mezcladas por error, etc.). Botón nuevo, justo
+        # después de RPG.
+        self.coherenciasBtn = QPushButton()
+        self.coherenciasBtn.setObjectName('CoherenciasButton')
+        _apply_panel_icon(self.coherenciasBtn, 'coherencias.png', self.tr('COH'))
+        self.coherenciasBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.coherenciasBtn.setToolTip(
+            self.tr('Comprobar la integridad del proyecto activo (páginas de otro '
+                    'tomo mezcladas por error, huecos, etc.)'))
+        self.coherencias_clicked = self.coherenciasBtn.clicked
+
+        # G — guardar todas las páginas
+        self.saveAllPagesBtn = QPushButton()
+        self.saveAllPagesBtn.setObjectName('SaveAllPagesButton')
+        _apply_panel_icon(self.saveAllPagesBtn, 'g.png', self.tr('G'))
+        self.saveAllPagesBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.saveAllPagesBtn.setToolTip(self.tr('Guardar todas las páginas'))
+        self.save_all_pages_clicked = self.saveAllPagesBtn.clicked
+
+        # GP — guardar solo la página activa
+        self.savePageBtn = QPushButton()
+        self.savePageBtn.setObjectName('SavePageButton')
+        _apply_panel_icon(self.savePageBtn, 'gp.png', self.tr('GP'))
+        self.savePageBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.savePageBtn.setToolTip(self.tr('Guardar página activa'))
+        self.save_page_clicked = self.savePageBtn.clicked
+
+        # TP — panel de traducción de página
+        self.tpBtn = QPushButton()
+        self.tpBtn.setObjectName('TPButton')
+        _apply_panel_icon(self.tpBtn, 'panel-translator.png', self.tr('TP'))
+        self.tpBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.tpBtn.setToolTip(self.tr('Panel de Traducción de Página'))
+        self.tp_clicked = self.tpBtn.clicked
+
+        # PS — exportar OCRTradu.txt / Tradu.txt para Photoshop
+        self.psBtn = QPushButton()
+        self.psBtn.setObjectName('PSButton')
+        _apply_panel_icon(self.psBtn, 'panel-ps.png', self.tr('PS'))
+        self.psBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.psBtn.setToolTip(self.tr('Exportar OCRTradu.txt / Tradu.txt para Photoshop'))
+        self.ps_clicked = self.psBtn.clicked
+
+        # GL — glosario de nombres propios de la serie
+        self.glosarioBtn = QPushButton()
+        self.glosarioBtn.setObjectName('GlosarioButton')
+        _apply_panel_icon(self.glosarioBtn, 'panel-glosario.png', self.tr('GL'))
+        self.glosarioBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.glosarioBtn.setToolTip(self.tr('Glosario de nombres propios de la serie'))
+        self.glosario_clicked = self.glosarioBtn.clicked
+
         vlayout = QVBoxLayout(self)
         vlayout.addWidget(self.openBtn)
         vlayout.addWidget(self.showPageListLabel)
@@ -187,6 +327,13 @@ class LeftBar(Widget):
         vlayout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
         vlayout.addWidget(self.configChecker)
         vlayout.addWidget(self.runImgtransBtn)
+        vlayout.addWidget(self.runPageBtn)
+        vlayout.addWidget(self.coherenciasBtn)
+        vlayout.addWidget(self.saveAllPagesBtn)
+        vlayout.addWidget(self.savePageBtn)
+        vlayout.addWidget(self.tpBtn)
+        vlayout.addWidget(self.psBtn)
+        vlayout.addWidget(self.glosarioBtn)
         vlayout.setContentsMargins(padding, LEFTBTN_WIDTH // 2, padding, LEFTBTN_WIDTH // 2)
         vlayout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         vlayout.setSpacing(LEFTBTN_WIDTH * 3 // 4)
@@ -415,19 +562,14 @@ class TitleBar(Widget):
         self.prevpage_trigger = prevPageAction.triggered
         self.nextpage_trigger = nextPageAction.triggered
 
-        # Tools Menu
+        # 工具菜单
         self.toolsToolBtn = TitleBarToolBtn(self)
         self.toolsToolBtn.setText(self.tr('Tools'))
         
-        # Merge Tool
-        mergeToolAction = QAction('区域合并工具', self)
+        # 区域合并工具
+        mergeToolAction = QAction(self.tr('Region Merge Tool'), self)
         mergeToolAction.setShortcut(QKeySequence('Ctrl+Shift+M'))
         self.merge_tool_trigger = mergeToolAction.triggered
-
-        # Photoshop Bridge Tool
-        psBridgeAction = QAction(self.tr('Photoshop Bridge'), self)
-        psBridgeAction.setShortcut(QKeySequence('Ctrl+Shift+P'))
-        self.ps_bridge_trigger = psBridgeAction.triggered
 
         self.path_reorder_action = QAction(self.tr('Path Reorder'), self)
         self.path_reorder_action.setCheckable(True)
@@ -435,13 +577,17 @@ class TitleBar(Widget):
 
         fontExclusionAction = QAction(self.tr('Font Exclusion'), self)
         self.font_exclusion_trigger = fontExclusionAction.triggered
-        
+
+        self.defragment_all_action = QAction(self.tr('Defragment lines in ALL pages'), self)
+        self.defragment_all_trigger = self.defragment_all_action.triggered
+
         toolsMenu = QMenu(self.toolsToolBtn)
         toolsMenu.addAction(mergeToolAction)
-        toolsMenu.addAction(psBridgeAction)
         toolsMenu.addAction(self.path_reorder_action)
         toolsMenu.addSeparator()
         toolsMenu.addAction(fontExclusionAction)
+        toolsMenu.addSeparator()
+        toolsMenu.addAction(self.defragment_all_action)
         self.toolsToolBtn.setMenu(toolsMenu)
         self.toolsToolBtn.setPopupMode(QToolButton.InstantPopup)
 
