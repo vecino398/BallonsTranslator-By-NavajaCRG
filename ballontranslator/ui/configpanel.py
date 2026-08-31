@@ -1099,6 +1099,20 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
         )
         self.let_autolayout_checker.stateChanged.connect(self.on_autolayout_changed)
 
+        # Selector de capitalización propio (independiente de "Letter Case" de arriba,
+        # que actúa tras la sustitución de glosario). Este combobox controla
+        # pcfg.let_text_case_mode, usado por normalize_text_case() en el
+        # flujo de traducción/edición.
+        self.let_case_mode_combox, _ = typesettingConfigPanel.addCombobox(
+            [
+                self.tr('No change'),
+                self.tr('TO UPPERCASE'),
+                self.tr('Sentence case'),
+            ],
+            self.tr('Text case')
+        )
+        self.let_case_mode_combox.currentIndexChanged.connect(self.on_case_mode_changed)
+
         self.let_textstyle_indep_checker, _ = typesettingConfigPanel.addCheckBox(self.tr('Independent text styles for each projects'))
         self.let_textstyle_indep_checker.stateChanged.connect(self.on_textstyle_indep_changed)
 
@@ -1348,7 +1362,11 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
         sublock.layout().insertStretch(-1)
         imsave_sublock.layout().addWidget(sublock)
 
-        self.intermediate_imgformat_combobox, intermediate_imsave_sublock = applicationConfigPanel.addCombobox(['PNG', 'JXL'], self.tr('Intermediate image format'))
+        self.intermediate_imgformat_combobox, intermediate_imsave_sublock = applicationConfigPanel.addCombobox(['PNG', 'JPG', 'JXL'], self.tr('Intermediate image format'))
+        self.save_result_img_checker, _ = applicationConfigPanel.addCheckBox(
+            self.tr('Guardar imagen resultado en carpeta result/'))
+        self.save_result_img_checker.stateChanged.connect(self.on_save_result_img_changed)
+
         self.intermediate_imgformat_combobox.activated.connect(self.on_intermediate_imgformat_changed)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1626,6 +1644,12 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
     def on_autolayout_changed(self):
         pcfg.let_autolayout_flag = self.let_autolayout_checker.isChecked()
 
+    def on_case_mode_changed(self):
+        pcfg.let_text_case_mode = self.let_case_mode_combox.currentIndex()
+
+    def on_save_result_img_changed(self):
+        pcfg.save_result_img = self.save_result_img_checker.isChecked()
+
     def on_quick_insert_characters_changed(self, text: str) -> None:
         pcfg.quick_insert_characters = text
 
@@ -1850,6 +1874,7 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
         self.let_family_combox.setCurrentIndex(pcfg.let_family_flag)
         self.let_writing_mode_combox.setCurrentIndex(pcfg.let_writing_mode_flag)
         self.let_autolayout_checker.setChecked(pcfg.let_autolayout_flag)
+        self.let_case_mode_combox.setCurrentIndex(getattr(pcfg, 'let_text_case_mode', 2))
         self.quick_insert_characters_edit.setText(pcfg.quick_insert_characters)
         self.let_letter_case_buttons[pcfg.let_letter_case].setChecked(True)
         self.compact_vertical_punctuation_checker.setChecked(
@@ -1867,6 +1892,7 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
         self.auto_tate_chu_yoko_apply_btn.setVisible(auto_tcy.enabled)
         self.let_textstyle_indep_checker.setChecked(pcfg.let_textstyle_indep_flag)
         self.rst_imgformat_combobox.setCurrentText(pcfg.imgsave_ext.replace('.', '').upper())
+        self.save_result_img_checker.setChecked(getattr(pcfg, 'save_result_img', True))
         self.intermediate_imgformat_combobox.setCurrentText(pcfg.intermediate_imgsave_ext.replace('.', '').upper())
         self.rst_imgquality_edit.setText(str(pcfg.imgsave_quality))
         self.empty_runcache_checker.setChecked(pcfg.module.empty_runcache)
