@@ -12,7 +12,7 @@ from ballontranslator.utils.logger import logger
 from ballontranslator.utils.config import pcfg
 from .funcmaps import get_maskseg_method
 from .module_manager import ModuleManager
-from .image_edit import ImageEditMode, PenShape, PixmapItem, StrokeImgItem
+from .image_edit import ImageEditMode, PenShape, PixmapItem, StrokeImgItem, detect_balloon_contour_points
 from .custom_widget import Widget, SeparatorWidget, PaintQSlider, ColorPickerLabel
 from .canvas import Canvas
 from .misc import ndarray2pixmap, themed_icon_path
@@ -231,6 +231,19 @@ class RectPanel(Widget):
         self.dilate_slider = PaintQSlider()
         self.dilate_slider.setRange(0, 100)
         self.dilate_slider.valueChanged.connect(self.dilate_ksize_changed)
+
+        self.erode_label = ToolNameLabel(100, self.tr('Retranqueo'))
+        self.erode_label.setToolTip(self.tr(
+            "Solo Varita Mágica: retranquea el contorno detectado hacia "
+            "dentro del globo (píxeles), para que la máscara no toque el "
+            "borde oscuro y el inpaint no salga con un tono plano."
+        ))
+        self.erode_slider = PaintQSlider()
+        self.erode_slider.setRange(0, 15)
+        self.erode_slider.setValue(pcfg.drawpanel.magic_wand_erode_px)
+        self.erode_slider.valueChanged.connect(self.on_erode_changed)
+        self.erode_label.hide()
+        self.erode_slider.hide()
         self.methodComboBox = QComboBox()
         self.methodComboBox.setFixedHeight(CONFIG_COMBOBOX_HEIGHT)
         self.methodComboBox.setFixedWidth(CONFIG_COMBOBOX_SHORT)
@@ -258,8 +271,10 @@ class RectPanel(Widget):
         glayout = QGridLayout()
         glayout.addWidget(self.dilate_label, 0, 0)
         glayout.addWidget(self.dilate_slider, 0, 1)
-        glayout.addWidget(self.autoChecker, 1, 0)
-        glayout.addWidget(self.methodComboBox, 1, 1)
+        glayout.addWidget(self.erode_label, 1, 0)
+        glayout.addWidget(self.erode_slider, 1, 1)
+        glayout.addWidget(self.autoChecker, 2, 0)
+        glayout.addWidget(self.methodComboBox, 2, 1)
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -270,6 +285,13 @@ class RectPanel(Widget):
 
     def on_inpaint_seg_method_changed(self):
         pcfg.drawpanel.rectool_method = self.methodComboBox.currentIndex()
+
+    def on_erode_changed(self):
+        pcfg.drawpanel.magic_wand_erode_px = self.erode_slider.value()
+
+    def set_magic_wand_controls_visible(self, visible: bool):
+        self.erode_label.setVisible(visible)
+        self.erode_slider.setVisible(visible)
 
     def on_auto_changed(self):
         if self.autoChecker.isChecked():
@@ -321,6 +343,8 @@ class DrawingPanel(Widget):
         canvas.end_scale_tool.connect(self.on_end_scale_tool)
         canvas.scalefactor_changed.connect(self.on_canvas_scalefactor_changed)
         canvas.end_create_rect.connect(self.on_end_create_rect)
+        canvas.end_create_lasso.connect(self.on_end_create_lasso)
+        canvas.magic_wand_clicked.connect(self.on_magic_wand_clicked)
 
         self.currentTool: DrawToolCheckBox = None
         self.handTool = DrawToolCheckBox()
@@ -348,6 +372,21 @@ class DrawingPanel(Widget):
                 self.inpainter_config_requested
             )
 
+        self.lassoTool = DrawToolCheckBox()
+        self.lassoTool.setObjectName("DrawLassoTool")
+        self.lassoTool.setToolTip(self.tr("Lazo de selección libre"))
+        self.lassoTool.checked.connect(self.on_use_lassotool)
+        self.lassoTool.stateChanged.connect(self.on_lassochecker_changed)
+
+        self.magicWandTool = DrawToolCheckBox()
+        self.magicWandTool.setObjectName("DrawMagicWandTool")
+        self.magicWandTool.setToolTip(self.tr(
+            "Varita mágica: clic detecta el globo bajo el cursor. "
+            "Mayús + clic suma otro globo. Clic derecho lo quita."
+        ))
+        self.magicWandTool.checked.connect(self.on_use_magicwandtool)
+        self.magicWandTool.stateChanged.connect(self.on_magicwandchecker_changed)
+
         self.penTool = DrawToolCheckBox()
         self.penTool.setObjectName("DrawPenTool")
         self.penTool.checked.connect(self.on_use_pentool)
@@ -362,6 +401,8 @@ class DrawingPanel(Widget):
         toolboxlayout.addWidget(self.inpaintTool)
         toolboxlayout.addWidget(self.penTool)
         toolboxlayout.addWidget(self.rectTool)
+        toolboxlayout.addWidget(self.lassoTool)
+        toolboxlayout.addWidget(self.magicWandTool)
 
         self.canvas.painting_pen = self.pentool_pen = \
             QPen(Qt.GlobalColor.black, 1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
@@ -514,8 +555,34 @@ class DrawingPanel(Widget):
         self.currentTool = self.rectTool
         pcfg.drawpanel.current_tool = ImageEditMode.RectTool
         self.toolConfigStackwidget.setCurrentWidget(self.rectPanel)
+        self.rectPanel.set_magic_wand_controls_visible(False)
         self.canvas.gv.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.canvas.image_edit_mode = ImageEditMode.RectTool
+        self.setCrossCursor()
+
+    def on_use_lassotool(self) -> None:
+        if self.currentTool is not None and self.currentTool != self.lassoTool:
+            self.currentTool.setChecked(False)
+        self.currentTool = self.lassoTool
+        pcfg.drawpanel.current_tool = ImageEditMode.LassoTool
+        # Reutiliza el mismo panel de opciones (dilatar, auto, inpaint, borrar) que el Rectángulo.
+        self.toolConfigStackwidget.setCurrentWidget(self.rectPanel)
+        self.rectPanel.set_magic_wand_controls_visible(False)
+        self.canvas.cancel_lasso()
+        self.canvas.gv.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.canvas.image_edit_mode = ImageEditMode.LassoTool
+        self.setCrossCursor()
+
+    def on_use_magicwandtool(self) -> None:
+        if self.currentTool is not None and self.currentTool != self.magicWandTool:
+            self.currentTool.setChecked(False)
+        self.currentTool = self.magicWandTool
+        pcfg.drawpanel.current_tool = ImageEditMode.MagicWandTool
+        # Reutiliza el mismo panel de opciones (dilatar, auto, inpaint, borrar) que el Rectángulo/Lazo.
+        self.toolConfigStackwidget.setCurrentWidget(self.rectPanel)
+        self.rectPanel.set_magic_wand_controls_visible(True)
+        self.canvas.gv.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.canvas.image_edit_mode = ImageEditMode.MagicWandTool
         self.setCrossCursor()
 
     def set_config(self, config: DrawPanelConfig):
@@ -539,6 +606,8 @@ class DrawingPanel(Widget):
             self.penTool.setChecked(True)
         elif config.current_tool == ImageEditMode.RectTool:
             self.rectTool.setChecked(True)
+        elif config.current_tool == ImageEditMode.LassoTool:
+            self.lassoTool.setChecked(True)
 
     def get_pen_cursor(self, pen_color: QColor = None, pen_size = None, draw_shape=True, shape=PenShape.Circle) -> QCursor:
         cross_size = 31
@@ -754,9 +823,9 @@ class DrawingPanel(Widget):
         self.scale_tool_pos = pos - QPointF(pen_size, pen_size)
         self.scale_circle.setCursor(self.get_pen_cursor(draw_shape=False))
         self.canvas.addItem(self.scale_circle)
-        
+
     def setCrossCursor(self) -> None:
-        if not self.isVisible() or self.currentTool != self.rectTool:
+        if not self.isVisible() or self.currentTool not in (self.rectTool, self.lassoTool, self.magicWandTool):
             return
         self.canvas.set_canvas_cursor(self.get_pen_cursor(draw_shape=False))
 
@@ -859,6 +928,149 @@ class DrawingPanel(Widget):
                 self.canvas.image_edit_mode = ImageEditMode.RectTool
             self.setCrossCursor()
 
+    def _context_padded_bbox(self, nx1, ny1, nx2, ny2, im_w, im_h):
+        """Expande la caja delimitadora con margen de contexto alrededor
+        de la selección (no toca la máscara, que sigue ajustada al globo).
+
+        Sin este margen, el recorte que recibe el inpainter apenas tiene
+        píxeles de fondo reales de los que partir (la máscara ocupa casi
+        toda la caja), y el resultado tiende a un color plano/promediado
+        en vez de una reconstrucción — especialmente notable con la
+        Varita Mágica, que ajusta el contorno al globo con precisión de
+        píxel, sin el margen natural que deja un trazo a mano.
+        """
+        w, h = nx2 - nx1, ny2 - ny1
+        pad = max(20, int(round(0.15 * max(w, h))))
+        x1 = max(0, nx1 - pad)
+        y1 = max(0, ny1 - pad)
+        x2 = min(im_w, nx2 + pad)
+        y2 = min(im_h, ny2 + pad)
+        return x1, y1, x2, y2
+
+    def on_end_create_lasso(self, points, mode: int):
+        """
+        Igual que on_end_create_rect, pero la máscara es el polígono
+        exacto que trazó el usuario (cv2.fillPoly), no un rectángulo.
+
+        mode 0: nueva selección (clic izquierdo, reemplaza lo pendiente).
+        mode 2: sumar este trazo a la selección pendiente (Mayús + clic izquierdo).
+        mode 3: restar este trazo de la selección pendiente (clic derecho).
+
+        También lo invoca la Varita Mágica (con el contorno detectado
+        automáticamente en vez de trazado a mano), reutilizando el mismo
+        pipeline de combinar/restar selecciones e inpaint.
+        """
+        if self.currentTool not in (self.lassoTool, self.magicWandTool):
+            return
+        tool_mode = ImageEditMode.LassoTool if self.currentTool == self.lassoTool else ImageEditMode.MagicWandTool
+
+        self.canvas.image_edit_mode = ImageEditMode.NONE
+        img = self.canvas.imgtrans_proj.inpainted_array
+        im_h, im_w = img.shape[:2]
+
+        pts = np.array([[p.x(), p.y()] for p in points], dtype=np.float64)
+        nx1 = int(np.clip(np.floor(pts[:, 0].min()), 0, im_w - 1))
+        ny1 = int(np.clip(np.floor(pts[:, 1].min()), 0, im_h - 1))
+        nx2 = int(np.clip(np.ceil(pts[:, 0].max()), 0, im_w - 1))
+        ny2 = int(np.clip(np.ceil(pts[:, 1].max()), 0, im_h - 1))
+
+        if ny2 - ny1 < 2 or nx2 - nx1 < 2:
+            self.canvas.image_edit_mode = tool_mode
+            return
+
+        has_pending = self.rect_inpaint_dict is not None and self.inpaint_mask_array is not None
+
+        if mode in (2, 3) and has_pending:
+            # Hay una selección pendiente: combinamos con ella en vez de reemplazarla.
+            ox1, oy1, ox2, oy2 = self.rect_inpaint_dict['inpaint_rect']
+
+            # El nuevo trazo también lleva su margen de contexto antes de combinar.
+            npx1, npy1, npx2, npy2 = self._context_padded_bbox(nx1, ny1, nx2, ny2, im_w, im_h)
+
+            # Nuevo cuadro delimitador que cubre selección antigua + trazo nuevo.
+            x1, y1 = min(ox1, npx1), min(oy1, npy1)
+            x2, y2 = max(ox2, npx2), max(oy2, npy2)
+
+            combined = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
+            combined[oy1 - y1: oy1 - y1 + (oy2 - oy1), ox1 - x1: ox1 - x1 + (ox2 - ox1)] = self.inpaint_mask_array
+
+            local_pts = (pts - [x1, y1]).astype(np.int32)
+            new_poly = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
+            cv2.fillPoly(new_poly, [local_pts], 255)
+
+            if mode == 2:   # Mayús: sumar
+                raw_mask = cv2.bitwise_or(combined, new_poly)
+            else:           # clic derecho: restar
+                raw_mask = cv2.bitwise_and(combined, cv2.bitwise_not(new_poly))
+
+        elif mode == 3:
+            # Clic derecho pero no hay nada pendiente de qué restar: no hacemos nada.
+            self.canvas.image_edit_mode = tool_mode
+            return
+
+        else:
+            # Selección nueva desde cero (mode 0, o mode 2 sin selección previa).
+            x1, y1, x2, y2 = self._context_padded_bbox(nx1, ny1, nx2, ny2, im_w, im_h)
+            local_pts = (pts - [x1, y1]).astype(np.int32)
+            raw_mask = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
+            cv2.fillPoly(raw_mask, [local_pts], 255)
+
+        mask = self.rectPanel.post_process_mask(raw_mask)
+        im = np.copy(img[y1:y2, x1:x2])
+
+        inpaint_dict = {
+            'img': im,
+            'mask': mask,
+            'inpaint_rect': [x1, y1, x2, y2],
+            'need_inpaint': True,
+            'bground_rgb': [255, 255, 255],
+            'ballon_mask': raw_mask,
+        }
+        user_preview_mask = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
+        user_preview_mask[:, :, [0, 2, 3]] = (mask[:, :, np.newaxis] / 2).astype(np.uint8)
+        self.inpaint_mask_item.setPixmap(ndarray2pixmap(user_preview_mask))
+        self.inpaint_mask_item.setParentItem(self.canvas.baseLayer)
+        self.inpaint_mask_item.setPos(x1, y1)
+
+        self.inpaint_mask_array = raw_mask
+        self.rect_inpaint_dict = inpaint_dict
+
+        # El auto-inpaint inmediato solo se dispara en un trazo nuevo y normal
+        # (sin Mayús ni botón derecho), para no interrumpir mientras sigues combinando.
+        if mode == 0 and self.rectPanel.auto():
+            self.inpaintRect(inpaint_dict)
+        else:
+            self.canvas.image_edit_mode = tool_mode
+
+        self.setCrossCursor()
+
+    def on_magic_wand_clicked(self, point: QPointF, mode: int):
+        """
+        Varita mágica: detecta el globo bajo el punto pulsado (bordes +
+        flood-fill con cierre progresivo) y reutiliza el mismo pipeline
+        del Lazo para aplicar la selección resultante.
+
+        mode 0: clic izquierdo — nueva selección.
+        mode 2: Mayús + clic izquierdo — sumar este globo a la selección.
+        mode 3: clic derecho — quitar el globo bajo el cursor de la selección.
+        """
+        if self.currentTool != self.magicWandTool:
+            return
+
+        img = self.canvas.imgtrans_proj.inpainted_array
+        if img is None:
+            return
+
+        seed_x, seed_y = int(point.x()), int(point.y())
+        erode_px = getattr(pcfg.drawpanel, 'magic_wand_erode_px', 3)
+        contour_pts = detect_balloon_contour_points(img, seed_x, seed_y, erode_px=erode_px)
+        if contour_pts is None:
+            # No se detectó ningún globo válido bajo el cursor: no hacemos nada.
+            return
+
+        points = [QPointF(float(x), float(y)) for x, y in contour_pts]
+        self.on_end_create_lasso(points, mode)
+
     def inpaintRect(self, inpaint_dict):
         img = inpaint_dict['img']
         mask = inpaint_dict['mask']
@@ -900,6 +1112,15 @@ class DrawingPanel(Widget):
         if not self.rectTool.isChecked():
             self.clearInpaintItems()
 
+    def on_lassochecker_changed(self):
+        if not self.lassoTool.isChecked():
+            self.canvas.cancel_lasso()
+            self.clearInpaintItems()
+
+    def on_magicwandchecker_changed(self):
+        if not self.magicWandTool.isChecked():
+            self.clearInpaintItems()
+
     def hideEvent(self, e) -> None:
         self.clearInpaintItems()
         return super().hideEvent(e)
@@ -912,7 +1133,9 @@ class DrawingPanel(Widget):
             if self.inpaint_mask_item.scene() == self.canvas:
                 self.canvas.removeItem(self.inpaint_mask_item)
             if self.rectTool.isChecked():
-                self.canvas.image_edit_mode = ImageEditMode.RectTool    
+                self.canvas.image_edit_mode = ImageEditMode.RectTool
+            elif self.lassoTool.isChecked():
+                self.canvas.image_edit_mode = ImageEditMode.LassoTool
             
         if self.inpaint_stroke is not None:
             if self.inpaint_stroke.scene() == self.canvas:
