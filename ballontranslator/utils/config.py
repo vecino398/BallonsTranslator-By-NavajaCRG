@@ -1,4 +1,4 @@
-import json, os, string, traceback
+import json, os, re, string, traceback
 import os.path as osp
 import copy
 from dataclasses import fields
@@ -97,8 +97,8 @@ class ModuleConfig(Config):
     ocr_llm_id: str = ''
     inpaint_llm_id: str = ''
     inpainter_params: Dict = field(default_factory=lambda: dict())
-    translate_source: str = '日本語'
-    translate_target: str = '简体中文'
+    translate_source: str = 'Français'
+    translate_target: str = 'Español'
     translate_context: str = TranslateContext.Page
     llm_translate_context: str = LLMTranslateContext.PAGE
     llm_prior_context_token_budget: int = 4096
@@ -230,6 +230,7 @@ class DrawPanelConfig(Config):
     rectool_auto: bool = False
     rectool_method: int = 0
     recttool_dilate_ksize: int = 2
+    magic_wand_erode_px: int = 3  # retranqueo (px) del contorno detectado hacia dentro del globo
 
 @nested_dataclass
 class PackageManagerConfig(Config):
@@ -302,7 +303,7 @@ class ProgramConfig(Config):
     mask_transparency: float = 0.
     original_transparency: float = 0.
     open_recent_on_startup: bool = True 
-    check_update_on_startup: bool = True
+    check_update_on_startup: bool = False  # Desactivado para no sobreescribir modificaciones
     spellcheck_enabled: bool = False
     spellcheck_external_dict_path: str = ""
     spellcheck_repo_dicts: str = ""
@@ -325,6 +326,10 @@ class ProgramConfig(Config):
     let_family_flag: int = 0
     let_autolayout_flag: bool = True
     let_letter_case: str = OCRTextPostprocess.NONE
+    # Modo de capitalización automática al traducir (sistema propio del fork):
+    #   0 = Sin cambios   1 = A MAYÚSCULAS   2 = Formato Oración (default)
+    let_text_case_mode: int = 2
+    format_ps_mode: bool = True  # True=modo Photoshop (delimitadores PS), False=modo edición íntegra en BT (formato real B/I/U/etc.)
     let_show_only_custom_fonts_flag: bool = False
     let_textstyle_indep_flag: bool = False
     text_styles_path: str = osp.join(shared.DEFAULT_TEXTSTYLE_DIR, 'default.json')
@@ -348,8 +353,11 @@ class ProgramConfig(Config):
     mt_sublist: List = field(default_factory=lambda: list())
     display_lang: str = field(default_factory=lambda: shared.DEFAULT_DISPLAY_LANG) # to always apply shared.DEFAULT_DISPLAY_LANG
     imgsave_quality: int = 100
-    imgsave_ext: str = '.png'
-    intermediate_imgsave_ext: str = '.png'
+    imgsave_ext: str = '.jpg'
+    intermediate_imgsave_ext: str = '.jpg'
+    save_result_img: bool = True  # Guardar imagen resultado en result/
+    glosario_path: str = ''  # Ruta al glosario.json global de la serie (panel GL)
+    right_panel_width: int = -1  # -1 = sin personalizar aún: se deja el tamaño natural de Qt (como en BT stock)
     show_text_style_preset: bool = True
     expand_tstyle_panel: bool = True
     show_text_effect_panel: bool = True
@@ -486,6 +494,51 @@ def load_textstyle_from(p: str, raise_exception = False):
         text_styles.clear()
     text_styles.extend(styles_loaded)
     pcfg.text_styles_path = p
+
+def defragment_line_breaks(texto: str) -> str:
+    """Une en una sola línea los saltos de línea/párrafo internos de un
+    texto (\\r, \\n, y los separadores de línea/párrafo de Qt \\u2028/\\u2029),
+    colapsando espacios repetidos. No toca mayúsculas/minúsculas.
+
+    Función compartida: la usan tanto normalize_text_case() (más abajo) como
+    commands.TextTransformCommand (modo "defragment") y el desfragmentado en
+    bloque de todas las páginas (mainwindow.py), para que el criterio de
+    "qué cuenta como línea fragmentada" sea idéntico en los tres sitios.
+    """
+    if not texto:
+        return texto
+    texto = re.sub(r'[\r\n\u2028\u2029]+', ' ', texto)
+    texto = re.sub(r' {2,}', ' ', texto)
+    return texto.strip()
+
+
+def normalize_text_case(texto: str) -> str:
+    """Desfragmenta líneas y aplica el modo de capitalización configurado en
+    pcfg.let_text_case_mode (0 = sin cambios, 1 = MAYÚSCULAS, 2 = Formato
+    Oración). La desfragmentación de líneas se aplica siempre.
+
+    Función compartida: la usan tanto manager.py (creación de bloques nuevos
+    y `updateTranslation`) como drawing_commands.py (`RunBlkTransCommand`,
+    el flujo en vivo de detectar+OCR+traducir un globo), para que "Modo
+    Salida Texto" se aplique de forma consistente sin importar por qué
+    camino llegue el resultado de la traducción.
+    """
+    if not texto or not texto.strip():
+        return texto
+    texto = defragment_line_breaks(texto)
+
+    modo = getattr(pcfg, 'let_text_case_mode', 2)
+    if modo == 0:
+        return texto
+    if modo == 1:
+        return texto.upper()
+
+    # modo 2 (o cualquier otro valor): Formato Oración
+    m = re.match(r'^([¡¿—\-]+)(.*)', texto, re.DOTALL)
+    pre, resto = (m.group(1), m.group(2)) if m else ('', texto)
+    if resto:
+        texto = pre + resto[0].upper() + resto[1:].lower()
+    return texto
 
 def load_config(config_path: str = None):
     global config_created_on_load
