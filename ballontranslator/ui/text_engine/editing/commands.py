@@ -893,3 +893,101 @@ class MultiPasteCommand(QUndoCommand):
         for blkitem, etran in zip(self.blkitems, self.etrans):
             blkitem.undo()
             etran.undo()
+
+class TextTransformCommand(QUndoCommand):
+    """
+    Transforma el texto de TextBlkItems y sus widgets de traducción
+    sincronizadamente: upper, lower, sentence, swap.
+    """
+
+    def __init__(self, items: List[TextBlkItem], etrans_list, mode: str):
+        super(TextTransformCommand, self).__init__()
+        self.items = items
+        self.etrans_list = etrans_list  # widgets e_trans del panel de traducción
+        self.mode = mode
+        self.old_item_html = []
+        self.new_item_html = []
+        self.old_etrans_text = []
+        self.new_etrans_text = []
+
+        import re
+
+        def _sentence(s):
+            s = s.strip()
+            if not s:
+                return s
+            m = re.match(r'^([¡¿—…\-]+)(.*)', s, re.DOTALL)
+            pre, rest = (m.group(1), m.group(2)) if m else ('', s)
+            if not rest:
+                return s
+            return pre + rest[0].upper() + rest[1:].lower()
+
+        def _defragment(s):
+            # Une líneas fragmentadas en una sola línea limpia.
+            # \u2028/\u2029 (line/paragraph separator) se incluyen por si el
+            # texto llega con saltos "blandos" de Qt en vez de \n/\r literales.
+            import re as _re
+            s = _re.sub(r'[\r\n\u2028\u2029]+', ' ', s)
+            s = _re.sub(r' {2,}', ' ', s)
+            return s.strip()
+
+        def _transform(text, mode):
+            if mode == "upper":
+                return text.upper()
+            elif mode == "lower":
+                return text.lower()
+            elif mode == "sentence":
+                return _sentence(text)
+            elif mode == "defragment":
+                return _defragment(text)
+            elif mode == "swap":
+                return text.swapcase()
+            return text
+
+        for item, etrans in zip(items, etrans_list):
+            # Guardar estado anterior
+            self.old_item_html.append(item.toHtml())
+            self.old_etrans_text.append(etrans.toPlainText() if etrans else "")
+
+            # Calcular nuevo texto para el globo
+            old_text = item.toPlainText()
+            new_text = _transform(old_text, mode)
+            item.setPlainText(new_text)
+            self.new_item_html.append(item.toHtml())
+
+            # Calcular nuevo texto para el widget de traducción
+            if etrans:
+                old_etrans = etrans.toPlainText()
+                new_etrans = _transform(old_etrans, mode)
+                self.new_etrans_text.append(new_etrans)
+            else:
+                self.new_etrans_text.append("")
+
+    def redo(self):
+        for item, html, etrans, etxt in zip(
+            self.items, self.new_item_html, self.etrans_list, self.new_etrans_text
+        ):
+            item.setHtml(html)
+            item.repaint_background()
+            item.update()
+            if etrans and etxt:
+                etrans.setPlainText(etxt)
+            # A nivel de datos (blk), no solo del widget: sin esto, blk.rich_text
+            # conserva el HTML viejo y en la próxima updateTextBlkList()/guardado
+            # gana sobre blk.translation, deshaciendo visualmente la transformación
+            # en cuanto se cambia de página y se vuelve (mismo patrón que ya se
+            # sigue en RunBlkTransCommand y en TranslationPagePanel.guardar()).
+            item.blk.rich_text = ''
+            item.blk.translation = etxt
+
+    def undo(self):
+        for item, html, etrans, etxt in zip(
+            self.items, self.old_item_html, self.etrans_list, self.old_etrans_text
+        ):
+            item.setHtml(html)
+            item.repaint_background()
+            item.update()
+            if etrans:
+                etrans.setPlainText(etxt)
+            item.blk.rich_text = ''
+            item.blk.translation = etxt
