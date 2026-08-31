@@ -1,9 +1,10 @@
+#siempre invoca al modelo de inpaint de verdad, más lenta en el caso de fondo liso pero más consistente/predecible, sin ese heurístico intermedio decidiendo por ti.
 import numpy as np
 import cv2
 from typing import List
 
 from ballontranslator.utils.registry import Registry
-from ballontranslator.utils.textblock_mask import extract_ballon_mask
+from ballontranslator.utils.textblock_mask import extract_ballon_mask  # noqa: F401 (kept for compatibility, no longer used for flat-fill shortcut)
 from ballontranslator.utils.imgproc_utils import enlarge_window, rotate_polygons, xywh2xyxypoly
 from ballontranslator.utils.config import pcfg
 
@@ -15,6 +16,30 @@ register_inpainter = INPAINTERS.register_module
 
 # Keep this file limited to shared base logic; concrete inpainters live elsewhere.
 
+
+def inpaint_handle_alpha_channel(original_alpha, mask):
+    '''
+    perhaps a better idea is to feed the alpha into inpainting model, but it'll double the cost  
+    for now it just return the original alpha
+    '''
+
+    result_alpha = original_alpha.copy()
+
+    # Analyze the alpha values around the original mask to determine appropriate transparency
+    mask_dilated = cv2.dilate((mask > 127).astype(np.uint8), np.ones((15, 15), np.uint8), iterations=1)
+    surrounding_mask = mask_dilated - (mask > 127).astype(np.uint8)
+
+    if np.any(surrounding_mask > 0):
+        surrounding_alpha = original_alpha[surrounding_mask > 0]
+        if len(surrounding_alpha) > 0:
+            median_surrounding_alpha = np.median(surrounding_alpha)
+            # If surrounding area is mostly transparent (median alpha < 128),
+            # make inpainted areas transparent too
+            if median_surrounding_alpha < 128:
+                inpainted_mask = (mask > 127)
+                result_alpha[inpainted_mask] = median_surrounding_alpha
+
+    return result_alpha
 
 def filter_mask_by_bboxes(mask: np.ndarray, textblock_list: List[TextBlock] = None) -> np.ndarray:
     """Keep mask pixels inside detected text block rects, with a small margin.
@@ -46,30 +71,6 @@ def filter_mask_by_bboxes(mask: np.ndarray, textblock_list: List[TextBlock] = No
     rect_mask = cv2.dilate(rect_mask, kernel)
     return cv2.bitwise_and(mask, rect_mask)
 
-
-def inpaint_handle_alpha_channel(original_alpha, mask):
-    '''
-    perhaps a better idea is to feed the alpha into inpainting model, but it'll double the cost  
-    for now it just return the original alpha
-    '''
-
-    result_alpha = original_alpha.copy()
-
-    # Analyze the alpha values around the original mask to determine appropriate transparency
-    mask_dilated = cv2.dilate((mask > 127).astype(np.uint8), np.ones((15, 15), np.uint8), iterations=1)
-    surrounding_mask = mask_dilated - (mask > 127).astype(np.uint8)
-
-    if np.any(surrounding_mask > 0):
-        surrounding_alpha = original_alpha[surrounding_mask > 0]
-        if len(surrounding_alpha) > 0:
-            median_surrounding_alpha = np.median(surrounding_alpha)
-            # If surrounding area is mostly transparent (median alpha < 128),
-            # make inpainted areas transparent too
-            if median_surrounding_alpha < 128:
-                inpainted_mask = (mask > 127)
-                result_alpha[inpainted_mask] = median_surrounding_alpha
-
-    return result_alpha
 
 class InpainterBase(BaseModule):
 
@@ -132,27 +133,11 @@ class InpainterBase(BaseModule):
             img_rgb = img[:, :, :3]  # Use only RGB for inpainting
         else:
             img_rgb = img
-
+        
         if pcfg.module.filter_mask_by_bboxes:
             mask = filter_mask_by_bboxes(mask, textblock_list)
         
         if not self.inpaint_by_block or textblock_list is None:
-            if check_need_inpaint:
-                ballon_msk, non_text_msk = extract_ballon_mask(img_rgb, mask)
-                if ballon_msk is not None:
-                    non_text_region = np.where(non_text_msk > 0)
-                    non_text_px = img_rgb[non_text_region]
-                    average_bg_color = np.median(non_text_px, axis=0)
-                    std_rgb = np.std(non_text_px - average_bg_color, axis=0)
-                    std_max = np.max(std_rgb)
-                    inpaint_thresh = 7 if np.std(std_rgb) > 1 else 10
-                    if std_max < inpaint_thresh:
-                        result_rgb = img_rgb.copy()
-                        result_rgb[np.where(ballon_msk > 0)] = average_bg_color
-                        # Recombine with alpha if original was RGBA
-                        if original_alpha is not None:
-                            return np.concatenate([result_rgb, original_alpha], axis=2)
-                        return result_rgb
             result_rgb = self.memory_safe_inpaint(img_rgb, mask, textblock_list)
             # Recombine with alpha if original was RGBA
             if original_alpha is not None:
@@ -171,26 +156,7 @@ class InpainterBase(BaseModule):
                 xyxy_e = enlarge_window(xyxy, im_w, im_h, ratio=1.7)
                 im = inpainted[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]]
                 msk = mask[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]]
-                need_inpaint = True
-                if pcfg.module.check_need_inpaint or check_need_inpaint:
-                    ballon_msk, non_text_msk = extract_ballon_mask(im, msk)
-                    if ballon_msk is not None:
-                        non_text_region = np.where(non_text_msk > 0)
-                        non_text_px = im[non_text_region]
-                        average_bg_color = np.median(non_text_px, axis=0)
-                        std_rgb = np.std(non_text_px - average_bg_color, axis=0)
-                        std_max = np.max(std_rgb)
-                        inpaint_thresh = 7 if np.std(std_rgb) > 1 else 10
-                        if std_max < inpaint_thresh:
-                            need_inpaint = False
-                            im[np.where(ballon_msk > 0)] = average_bg_color
-                        # cv2.imshow('im', im)
-                        # cv2.imshow('ballon', ballon_msk)
-                        # cv2.imshow('non_text', non_text_msk)
-                        # cv2.waitKey(0)
-                
-                if need_inpaint:
-                    inpainted[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]] = self.memory_safe_inpaint(im, msk)
+                inpainted[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]] = self.memory_safe_inpaint(im, msk)
 
                 mask[xyxy[1]:xyxy[3], xyxy[0]:xyxy[2]] = 0
             
@@ -199,7 +165,7 @@ class InpainterBase(BaseModule):
                 result_alpha = inpaint_handle_alpha_channel(original_alpha, original_mask)
                 return np.concatenate([inpainted, result_alpha], axis=2)
             return inpainted
-
+    
     def _inpaint(self, img: np.ndarray, mask: np.ndarray, textblock_list: List[TextBlock] = None) -> np.ndarray:
         raise NotImplementedError
     
