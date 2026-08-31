@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+
+<svg
+    class="icon"
+    viewBox="0 0 1024 1024"
+    version="1.1"
+    xmlns="http://www.w3.org/2000/svg"
+    width="200"
+    height="200"
+    fill="#3E8096">
+
+    <defs>
+        <style type="text/css">
+            .lasso-line {
+                fill: none;
+                stroke: #3E8096;
+                stroke-width: 58;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+        </style>
+    </defs>
+
+    <!-- Contorno del lazo -->
+    <path
+        class="lasso-line"
+        d="M190 584
+           C112 486 132 340 246 238
+           C354 140 526 108 672 154
+           C820 202 914 318 894 438
+           C876 548 754 620 610 632
+           C472 644 334 614 250 660
+           C178 700 176 786 246 824
+           C326 868 440 842 510 782" />
+
+    <!-- Cordón -->
+    <path
+        d="M486 748
+           C504 730 534 730 552 748
+           L680 876
+           C698 894 698 924 680 942
+           C662 960 632 960 614 942
+           L486 814
+           C468 796 468 766 486 748 Z"
+        fill="#3E8096" />
+
+    <!-- Nudo -->
+    <circle
+        cx="506"
+        cy="760"
+        r="50"
+        fill="#3E8096" />
+
+</svg>
