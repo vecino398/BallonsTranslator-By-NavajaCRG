@@ -600,7 +600,7 @@ QGroupBox#LLMProfileCard QLabel#LLMProfileTitle {
     font-size: 13px;
     padding: 0px 5px;
 }
-
+ 
 QLineEdit#LLMProfileNameEdit {
     border: 1px solid rgb(30, 147, 229);
     border-radius: 4px;
@@ -1130,7 +1130,8 @@ QFrame#RunPipelineStages QAbstractButton#RunPipelineModuleButton:hover {
     background-color: rgba(30, 147, 229, 20%);
 }
 
-QFrame#RunPipelineStages QToolButton#RunPipelineModuleConfigButton {
+QFrame#RunPipelineStages QToolButton#RunPipelineModuleConfigButton,
+QFrame#RunPipelineStages QToolButton#RunPipelineModuleDeactivateButton {
     min-width: 22px;
     max-width: 22px;
     min-height: 22px;
@@ -1141,7 +1142,8 @@ QFrame#RunPipelineStages QToolButton#RunPipelineModuleConfigButton {
     border-radius: 4px;
 }
 
-QFrame#RunPipelineStages QToolButton#RunPipelineModuleConfigButton:hover {
+QFrame#RunPipelineStages QToolButton#RunPipelineModuleConfigButton:hover,
+QFrame#RunPipelineStages QToolButton#RunPipelineModuleDeactivateButton:hover {
     background-color: rgba(30, 147, 229, 20%);
 }
 
@@ -1379,7 +1381,7 @@ QWidget#CodexAccountControls QPushButton#CodexSignOutButton {
 QWidget#CodexAccountControls QPushButton#CodexSignOutButton:pressed:enabled {
     color: rgb(30, 147, 229);
 }
-
+ 
 QPushButton#LLMProfileRestoreButton {
     border: none;
 }
@@ -1624,12 +1626,76 @@ QToolButton#FontEmphasisToolButton::menu-arrow {
     image: none;
 }
 
-QFontChecker#FontVerticalChecker::indicator {
-    image: url(resources/icons/fontfmt_vertical.svg);
+QPushButton#FontVerticalChecker {
+    width: 28px;
+    height: 22px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background-color: transparent;
+    padding: 0px;
 }
 
-QFontChecker#FontVerticalChecker::indicator:checked {
-    image: url(resources/icons/fontfmt_vertical_activate.svg);
+QPushButton#FontVerticalChecker:hover {
+    border: 1px solid rgb(30, 147, 229);
+    background-color: rgba(30, 147, 229, 0.12);
+}
+
+QPushButton#FontVerticalChecker:pressed,
+QPushButton#FontVerticalChecker:checked {
+    border: 1px solid rgb(30, 147, 229);
+    background-color: rgba(30, 147, 229, 0.25);
+}
+
+/* ── Botones de delimitadores PS (B/I/U/BI/S/x²/x₂) y el checker vertical,
+   unificados con el mismo look plano para que formen una fila coherente ── */
+QPushButton#PSDelimBtn {
+    width: 28px;
+    height: 22px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background-color: transparent;
+    padding: 0px;
+}
+
+QPushButton#PSDelimBtn:hover {
+    border: 1px solid rgb(30, 147, 229);
+    background-color: rgba(30, 147, 229, 0.12);
+}
+
+QPushButton#PSDelimBtn:pressed {
+    background-color: rgba(30, 147, 229, 0.25);
+}
+
+/* ── Interruptor PS/BT, mismo look que el botón "Añadir" de Transformar Texto ── */
+QPushButton#PSModeToggle {
+    width: 30px;
+    height: 22px;
+    padding: 0px;
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid rgb(30, 147, 229);
+    border-radius: 6px;
+    background-color: rgb(30, 147, 229);
+}
+
+QPushButton#PSModeToggle:hover {
+    background-color: #4ba7ee;
+}
+
+QPushButton#PSModeToggle:pressed {
+    background-color: #187fc3;
+}
+
+/* Modo BT (no marcado): pastilla gris para distinguirlo a simple vista del modo PS */
+QPushButton#PSModeToggle:!checked {
+    color: white;
+    border: 1px solid @borderColor;
+    background-color: @buttonColor;
+}
+
+QPushButton#PSModeToggle:!checked:hover {
+    background-color: @borderColor;
 }
 
 QFontChecker#FontTateChuYokoChecker::indicator {
@@ -1867,6 +1933,7 @@ QToolButton#RunPipelineModuleSelector {
     padding: 1px 24px 1px 8px;
 }
 
+
 QToolButton#BottomBarModuleToolButton:hover,
 QToolButton#BottomBarModuleToolButton:pressed,
 QToolButton#BottomBarModuleToolButton:open,
@@ -1874,6 +1941,12 @@ QToolButton#RunPipelineModuleSelector:hover,
 QToolButton#RunPipelineModuleSelector:open {
     border: none;
     background-color: rgba(30, 147, 229, 20%);
+}
+
+QComboBox#RunPipelineModuleSelector[moduleActive="false"],
+QComboBox#RunPipelineModuleSelector[moduleActive="false"]:hover {
+    color: @borderColor;
+    background-color: transparent;
 }
 
 QToolButton#RunPipelineModuleSelector[moduleActive="false"],
@@ -1977,7 +2050,7 @@ QCheckBox#TextblockChecker::indicator:checked{
 
 OpenBtn {
     border-style: none;
-    image: url(resources/icons/openbtn.svg);
+    image: url(resources/paneles/proyecto.png);
     background-color: @widgetBackgroundColor;
 
 }
@@ -1988,11 +2061,11 @@ OpenBtn::menu-indicator {
 }
 
 OpenBtn::hover {
-    image: url(resources/icons/openbtn_activate.svg);
+    image: url(resources/paneles/folder.png);
 }
 
 OpenBtn::pressed {
-    image: url(resources/icons/openbtn_activate.svg);
+    image: url(resources/paneles/folder.png);
 }
 
 TaskProgressBar QProgressBar {
@@ -2003,31 +2076,31 @@ TaskProgressBar QProgressBar {
 QCheckBox#ShowPageListChecker::indicator{
     height: 27px;
     width: 27px;
-    image: url(resources/icons/llm_context.svg);
+    image: url(resources/paneles/miniaturas.png);
 }
 
 QCheckBox#ShowPageListChecker::indicator:hover
 {
-    image: url(resources/icons/llm_context_activate.svg);
+    image: url(resources/paneles/miniaturas.png);
 }
 QCheckBox#ShowPageListChecker::indicator:checked
 {
-    image: url(resources/icons/llm_context_activate.svg);
+    image: url(resources/paneles/miniaturas.png);
 }
 
 QCheckBox#GlobalSearchChecker::indicator{
     height: 28px;
     width: 28px;
-    image: url(resources/icons/search.svg);
+    image: url(resources/paneles/search.png);
 }
 
 QCheckBox#GlobalSearchChecker::indicator:hover
 {
-    image: url(resources/icons/search_activate.svg);
+    image: url(resources/paneles/search.png);
 }
 QCheckBox#GlobalSearchChecker::indicator:checked
 {
-    image: url(resources/icons/search_activate.svg);
+    image: url(resources/paneles/search.png);
 }
 
 QSplitter#LLMContextPanelSplitter {
@@ -2159,18 +2232,18 @@ CustomGV {
 
 
 StateChecker#ConfigChecker::indicator{
-    height: 27px;
-    width: 27px;
-    image: url(resources/icons/leftbar_config.svg);
+    height: 30px;
+    width: 30px;
+    image: url(resources/paneles/preferencias.png);
 }
 
 StateChecker#ConfigChecker::indicator:hover
 {
-    image: url(resources/icons/leftbar_config_activate.svg);
+    image: url(resources/paneles/preferencias.png);
 }
 StateChecker#ConfigChecker::indicator:checked
 {
-    image: url(resources/icons/leftbar_config_activate.svg);
+    image: url(resources/paneles/preferencias.png);
 }
 
 QProgressBar::chunk {
@@ -2375,7 +2448,7 @@ DrawToolCheckBox#DrawShapeTool::indicator:hover {
 DrawToolCheckBox#DrawShapeTool::indicator:checked {
     image: url(resources/icons/drawingtools_shape.svg);
 }
-
+ 
 GlobalSearchWidget {
     border-color: @borderColor;
     border-style: solid;
@@ -3096,4 +3169,32 @@ QWidget#suggestion_popup QScrollBar::add-page:horizontal,
 QWidget#suggestion_popup QScrollBar::sub-page:horizontal {
     width: 0px;
     background: transparent;
+}
+
+/* ---------------- Lazo ---------------- */
+
+DrawToolCheckBox#DrawLassoTool::indicator {
+    image: url(resources/fershare/DrawLassoTool.svg);
+}
+
+DrawToolCheckBox#DrawLassoTool::indicator:hover {
+    image: url(resources/fershare/DrawLassoTool_activate.svg);
+}
+
+DrawToolCheckBox#DrawLassoTool::indicator:checked {
+    image: url(resources/fershare/DrawLassoTool_activate.svg);
+}
+
+/* ---------------- Varita mágica ---------------- */
+
+DrawToolCheckBox#DrawMagicWandTool::indicator {
+    image: url(resources/fershare/DrawMagicWandTool.svg);
+}
+
+DrawToolCheckBox#DrawMagicWandTool::indicator:hover {
+    image: url(resources/fershare/DrawMagicWandTool.svg);
+}
+
+DrawToolCheckBox#DrawMagicWandTool::indicator:checked {
+    image: url(resources/fershare/DrawMagicWandTool.svg);
 }
