@@ -84,6 +84,9 @@ class CustomGV(QGraphicsView):
     view_resized = Signal()
     hide_canvas = Signal()
     ctrl_released = Signal()
+    # --- Magic Wand NATIVA de BT (1.5.17): hover preview por edge-detection.
+    #     INTEGRADA. Solo se activa con painting_shape == PenShape.MagicWand
+    #     (paint/inpaint mode); no interfiere con nuestra varita (MagicWandTool).
     magic_wand_hover = Signal(QPointF)
     magic_wand_hover_left = Signal()
     canvas: Optional["Canvas"] = None
@@ -163,6 +166,7 @@ class CustomGV(QGraphicsView):
             if self.canvas.handle_ctrlc():
                 e.accept()
                 return
+
         elif modifiers & Qt.KeyboardModifier.ControlModifier and modifiers & Qt.KeyboardModifier.ShiftModifier:
             if key == QKEY.Key_C:
                 self.canvas.copy_src_signal.emit()
@@ -208,6 +212,12 @@ class Canvas(QGraphicsScene):
     end_create_textblock = Signal(QRectF)
     paste2selected_textitems = Signal()
     end_create_rect = Signal(QRectF, int)
+    end_create_lasso = Signal(object, int)
+
+    magic_wand_clicked = Signal(QPointF, int)   # punto, modo: 0=nueva 2=sumar(Mayús) 3=restar(clic derecho)
+    magic_wand_closure_created = Signal(object)
+    magic_wand_remove_last_closure = Signal()
+    magic_wand_clear_closures = Signal()
     end_create_shape_fill = Signal(QRectF, bool)
     finish_painting = Signal(StrokeImgItem)
     finish_erasing = Signal(StrokeImgItem)
@@ -227,9 +237,17 @@ class Canvas(QGraphicsScene):
     begin_scale_tool = Signal(QPointF)
     scale_tool = Signal(QPointF)
     end_scale_tool = Signal()
-    magic_wand_clicked = Signal(QPointF, bool)
-    image_layers_updated = Signal()
+    # --- Magic Wand NATIVA de BT (1.5.17): INTEGRADA.
+    #   La señal upstream se llama `magic_wand_clicked = Signal(QPointF, bool)`, pero
+    #   ese nombre ya es nuestro (`magic_wand_clicked = Signal(QPointF, int)`, modos
+    #   0=nueva 2=sumar 3=restar). Se RENOMBRA aquí a `native_magic_wand_clicked`:
+    #   drawingpanel.py debe conectar la nativa a este nombre, no al de la nuestra.
+    native_magic_wand_clicked = Signal(QPointF, bool)   # punto, erase (False=clic izq., True=clic der.)
+    image_layers_updated = Signal()   # emitida tras repintar inpaint; invalida la caché de detección de la nativa
     canvas_undostack_changed = Signal()
+
+    transform_textblks = Signal(str)    # mode: upper / lower / sentence
+    defragment_text_lines = Signal()    # unir líneas fragmentadas en una sola
     
     imgtrans_proj: ProjImgTrans = None
     painting_pen = QPen()
@@ -281,6 +299,7 @@ class Canvas(QGraphicsScene):
         self.gv.hide_canvas.connect(self.on_hide_canvas)
         self.gv.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.gv.canvas = self
+        # --- Magic Wand NATIVA de BT (1.5.17): INTEGRADA
         self._magic_wand_hover_enabled = False
         self.magic_wand_hover = self.gv.magic_wand_hover
         self.magic_wand_hover_left = self.gv.magic_wand_hover_left
@@ -385,6 +404,60 @@ class Canvas(QGraphicsScene):
 
         self.stroke_img_item: StrokeImgItem = None
         self.erase_img_key = None
+
+        # --- HERRAMIENTA LAZO ---
+        self.lasso_points = []
+        self.lasso_drawing = False
+
+        lasso_pen = QPen(
+            QColor(127, 0, 127, 220),
+            2,
+            Qt.PenStyle.DashLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+
+        self.lasso_path_item = QGraphicsPathItem()
+        self.lasso_path_item.setPen(lasso_pen)
+        self.lasso_path_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self.lasso_path_item.setZValue(1000)
+        self.lasso_path_item.hide()
+        self.addItem(self.lasso_path_item)
+
+        # --- CIERRE PROVISIONAL DE LA VARITA MÁGICA ---
+        self.magic_wand_closure_start = None
+        self.magic_wand_closure_end = None
+        self.magic_wand_closure_drawing = False
+
+        # Indica si el gesto actual se ha convertido
+        # realmente en un arrastre.
+        self.magic_wand_closure_dragged = False
+
+        # Polilínea provisional:
+        # Mayús + clic inicia o añade puntos.
+        self.magic_wand_polyline_active = False
+        self.magic_wand_polyline_points = []
+        self.magic_wand_polyline_hover_point = None
+
+        magic_wand_closure_pen = QPen(
+            QColor(255, 0, 0, 245),
+            4,
+            Qt.PenStyle.DashLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+
+        self.magic_wand_closure_path_item = QGraphicsPathItem()
+        self.magic_wand_closure_path_item.setPen(
+            magic_wand_closure_pen
+        )
+        self.magic_wand_closure_path_item.setBrush(
+            QBrush(Qt.BrushStyle.NoBrush)
+        )
+        self.magic_wand_closure_path_item.setZValue(1001)
+        self.magic_wand_closure_path_item.hide()
+        self.addItem(self.magic_wand_closure_path_item)
+
         self._primary_selected_text_item: Optional[TextBlkItem] = None
 
         self.editor_index = 0 # 0: drawing 1: text editor
@@ -695,7 +768,7 @@ class Canvas(QGraphicsScene):
 
         painter.end()
         self.inpaintLayer.setPixmap(pixmap)
-        self.image_layers_updated.emit()
+        self.image_layers_updated.emit()  # Magic Wand nativa (integrada)
 
     def setMaskTransparency(self, transparency: float):
         pcfg.mask_transparency = transparency
@@ -792,6 +865,33 @@ class Canvas(QGraphicsScene):
         if self._path_reorder_active:
             if key == QKEY.Key_Escape:
                 self.cancel_path_reorder()
+            event.accept()
+            return
+
+        if self.image_edit_mode == ImageEditMode.MagicWandTool:
+            if (
+                key in {QKEY.Key_Return, QKEY.Key_Enter}
+                and self.magic_wand_polyline_active
+            ):
+                self.finish_magic_wand_polyline()
+                event.accept()
+                return
+
+            if key == QKEY.Key_Escape and (
+                self.magic_wand_closure_drawing
+                or self.magic_wand_polyline_active
+            ):
+                self.cancel_magic_wand_closure()
+                event.accept()
+                return
+
+        if key == QKEY.Key_Escape and self.lasso_drawing:
+            self.cancel_lasso()
+            event.accept()
+            return
+
+        if key == QKEY.Key_Escape and self.image_edit_mode == ImageEditMode.MagicWandTool:
+            self.magic_wand_clear_closures.emit()
             event.accept()
             return
 
@@ -1184,6 +1284,361 @@ class Canvas(QGraphicsScene):
         if len(touched_ids) >= 2:
             self.path_reorder_finished.emit(touched_ids)
 
+    # ============== LAZO Y VARITA MÁGICA (fershare) ==============
+
+    def start_lasso(self, scene_pos: QPointF) -> None:
+        """
+        Inicia un nuevo trazado de lazo.
+
+        Los puntos se guardan en coordenadas reales de la imagen,
+        no en coordenadas ampliadas de la escena.
+        """
+        if not self.imgtrans_proj.img_valid:
+            return
+
+        image_pos = self.inpaintLayer.mapFromScene(scene_pos)
+
+        self.lasso_points = [QPointF(image_pos)]
+        self.lasso_drawing = True
+
+        path = QPainterPath()
+        path.moveTo(image_pos)
+
+        self.lasso_path_item.setPath(path)
+        self.lasso_path_item.setParentItem(self.baseLayer)
+        self.lasso_path_item.show()
+
+    def extend_lasso(self, scene_pos: QPointF) -> None:
+        """
+        Añade un punto al contorno que se está dibujando.
+        """
+        if not self.lasso_drawing:
+            return
+
+        image_pos = self.inpaintLayer.mapFromScene(scene_pos)
+
+        if self.lasso_points:
+            previous = self.lasso_points[-1]
+
+            # Evita almacenar centenares de puntos prácticamente iguales.
+            delta_x = image_pos.x() - previous.x()
+            delta_y = image_pos.y() - previous.y()
+
+            if delta_x * delta_x + delta_y * delta_y < 1.0:
+                return
+
+        self.lasso_points.append(QPointF(image_pos))
+
+        path = self.lasso_path_item.path()
+        path.lineTo(image_pos)
+        self.lasso_path_item.setPath(path)
+
+    def finish_lasso(self, mouse_button: Qt.MouseButton) -> None:
+        """
+        Cierra el lazo y envía sus puntos al DrawingPanel.
+        """
+        if not self.lasso_drawing:
+            return
+
+        self.lasso_drawing = False
+
+        points = list(self.lasso_points)
+        self.lasso_points = []
+
+        if len(points) < 3:
+            self.cancel_lasso()
+            return
+
+        path = self.lasso_path_item.path()
+        path.closeSubpath()
+        self.lasso_path_item.setPath(path)
+        self.lasso_path_item.hide()
+
+        # mode 0: nueva selección (clic izquierdo normal)
+        # mode 2: sumar a la selección pendiente (Mayús + clic izquierdo)
+        # mode 3: restar de la selección pendiente (clic derecho)
+        if mouse_button == Qt.MouseButton.RightButton:
+            mode = 3
+        elif QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
+            mode = 2
+        else:
+            mode = 0
+        self.end_create_lasso.emit(points, mode)
+
+    def cancel_lasso(self) -> None:
+        """
+        Cancela el contorno que se esté dibujando.
+        """
+        self.lasso_drawing = False
+        self.lasso_points = []
+
+        if self.lasso_path_item is not None:
+            self.lasso_path_item.setPath(QPainterPath())
+            self.lasso_path_item.hide()
+
+    def _magic_wand_points_are_separated(
+        self,
+        point_a: QPointF,
+        point_b: QPointF,
+        minimum_distance_squared: float = 4.0,
+    ) -> bool:
+        """
+        Comprueba que dos puntos no sean prácticamente iguales.
+        """
+        delta_x = point_b.x() - point_a.x()
+        delta_y = point_b.y() - point_a.y()
+
+        return (
+            delta_x * delta_x + delta_y * delta_y
+            >= minimum_distance_squared
+        )
+
+    def _update_magic_wand_closure_preview(self) -> None:
+        """
+        Actualiza la línea o polilínea roja provisional.
+        """
+        path = QPainterPath()
+
+        if self.magic_wand_polyline_active:
+            points = [
+                QPointF(point)
+                for point in self.magic_wand_polyline_points
+            ]
+
+            hover_point = self.magic_wand_polyline_hover_point
+
+            if (
+                hover_point is not None
+                and points
+                and self._magic_wand_points_are_separated(
+                    points[-1],
+                    hover_point,
+                    0.01,
+                )
+            ):
+                points.append(QPointF(hover_point))
+
+            if not points:
+                self.magic_wand_closure_path_item.setPath(QPainterPath())
+                self.magic_wand_closure_path_item.hide()
+                return
+
+            path.moveTo(points[0])
+
+            for point in points[1:]:
+                path.lineTo(point)
+
+        elif (
+            self.magic_wand_closure_drawing
+            and self.magic_wand_closure_start is not None
+            and self.magic_wand_closure_end is not None
+        ):
+            path.moveTo(self.magic_wand_closure_start)
+            path.lineTo(self.magic_wand_closure_end)
+
+        else:
+            self.magic_wand_closure_path_item.setPath(QPainterPath())
+            self.magic_wand_closure_path_item.hide()
+            return
+
+        self.magic_wand_closure_path_item.setPath(path)
+        self.magic_wand_closure_path_item.setParentItem(self.baseLayer)
+        self.magic_wand_closure_path_item.show()
+
+    def start_magic_wand_closure(self, scene_pos: QPointF) -> None:
+        """
+        Comienza un gesto de cierre.
+
+        Si el usuario arrastra, se creará una línea recta.
+        Si solamente hace clic, se iniciará o ampliará
+        una polilínea.
+        """
+        if not self.imgtrans_proj.img_valid:
+            return
+
+        # El visor debe conservar el foco para que el Canvas
+        # reciba Enter, Retroceso y Esc.
+        self.gv.setFocus(Qt.FocusReason.MouseFocusReason)
+
+        image_pos = self.inpaintLayer.mapFromScene(scene_pos)
+
+        self.magic_wand_closure_start = QPointF(image_pos)
+        self.magic_wand_closure_end = QPointF(image_pos)
+        self.magic_wand_closure_drawing = True
+        self.magic_wand_closure_dragged = False
+
+        if self.magic_wand_polyline_active:
+            self.magic_wand_polyline_hover_point = QPointF(image_pos)
+
+        self._update_magic_wand_closure_preview()
+
+    def extend_magic_wand_closure(self, scene_pos: QPointF) -> None:
+        """
+        Actualiza el extremo provisional mientras se mueve
+        el ratón.
+        """
+        if not self.magic_wand_closure_drawing:
+            return
+
+        if self.magic_wand_closure_start is None:
+            return
+
+        image_pos = self.inpaintLayer.mapFromScene(scene_pos)
+        self.magic_wand_closure_end = QPointF(image_pos)
+
+        # Exigimos un desplazamiento real de al menos 8 píxeles
+        # para distinguir un arrastre de los pequeños movimientos
+        # involuntarios que se producen al hacer clic.
+        if self._magic_wand_points_are_separated(
+            self.magic_wand_closure_start,
+            self.magic_wand_closure_end,
+            64.0,
+        ):
+            self.magic_wand_closure_dragged = True
+
+        if self.magic_wand_polyline_active:
+            self.magic_wand_polyline_hover_point = QPointF(image_pos)
+
+        self._update_magic_wand_closure_preview()
+
+    def update_magic_wand_polyline_hover(self, scene_pos: QPointF) -> None:
+        """
+        Muestra el segmento elástico desde el último vértice
+        hasta la posición actual del cursor.
+        """
+        if not self.magic_wand_polyline_active:
+            return
+
+        if not self.magic_wand_polyline_points:
+            return
+
+        image_pos = self.inpaintLayer.mapFromScene(scene_pos)
+
+        self.magic_wand_polyline_hover_point = QPointF(image_pos)
+
+        self._update_magic_wand_closure_preview()
+
+    def finish_magic_wand_closure(self) -> None:
+        """
+        Finaliza el gesto actual.
+
+        Mayús + arrastre:
+            crea inmediatamente una línea de dos puntos.
+
+        Mayús + clic:
+            inicia una polilínea o añade un nuevo vértice.
+        """
+        if not self.magic_wand_closure_drawing:
+            return
+
+        start = self.magic_wand_closure_start
+        end = self.magic_wand_closure_end
+        dragged = self.magic_wand_closure_dragged
+
+        self.magic_wand_closure_drawing = False
+        self.magic_wand_closure_start = None
+        self.magic_wand_closure_end = None
+        self.magic_wand_closure_dragged = False
+
+        if start is None or end is None:
+            self._update_magic_wand_closure_preview()
+            return
+
+        # Si ya existe una polilínea, el gesto añade
+        # un nuevo vértice en su posición final.
+        if self.magic_wand_polyline_active:
+            last_point = self.magic_wand_polyline_points[-1]
+
+            if self._magic_wand_points_are_separated(last_point, end):
+                self.magic_wand_polyline_points.append(QPointF(end))
+
+            self.magic_wand_polyline_hover_point = QPointF(end)
+            self._update_magic_wand_closure_preview()
+            return
+
+        # Un arrastre crea el cierre recto tradicional.
+        if dragged:
+            self.magic_wand_closure_path_item.setPath(QPainterPath())
+            self.magic_wand_closure_path_item.hide()
+
+            self.magic_wand_closure_created.emit([QPointF(start), QPointF(end)])
+            return
+
+        # Un clic sin arrastre inicia una polilínea.
+        self.magic_wand_polyline_active = True
+        self.magic_wand_polyline_points = [QPointF(start)]
+        self.magic_wand_polyline_hover_point = QPointF(start)
+
+        self._update_magic_wand_closure_preview()
+
+    def finish_magic_wand_polyline(self) -> None:
+        """
+        Termina la polilínea y envía todos sus puntos
+        al DrawingPanel.
+        """
+        if not self.magic_wand_polyline_active:
+            return
+
+        points = [QPointF(point) for point in self.magic_wand_polyline_points]
+
+        self.magic_wand_polyline_active = False
+        self.magic_wand_polyline_points = []
+        self.magic_wand_polyline_hover_point = None
+
+        self.magic_wand_closure_drawing = False
+        self.magic_wand_closure_start = None
+        self.magic_wand_closure_end = None
+        self.magic_wand_closure_dragged = False
+
+        self.magic_wand_closure_path_item.setPath(QPainterPath())
+        self.magic_wand_closure_path_item.hide()
+
+        if len(points) < 2:
+            return
+
+        self.magic_wand_closure_created.emit(points)
+
+    def remove_last_magic_wand_polyline_point(self) -> None:
+        """
+        Elimina el último vértice de la polilínea en curso.
+        """
+        if not self.magic_wand_polyline_active:
+            return
+
+        if self.magic_wand_polyline_points:
+            self.magic_wand_polyline_points.pop()
+
+        if not self.magic_wand_polyline_points:
+            self.cancel_magic_wand_closure()
+            return
+
+        self.magic_wand_polyline_hover_point = QPointF(
+            self.magic_wand_polyline_points[-1]
+        )
+
+        self._update_magic_wand_closure_preview()
+
+    def cancel_magic_wand_closure(self) -> None:
+        """
+        Cancela únicamente el cierre que se esté dibujando.
+
+        No elimina los cierres ya terminados.
+        """
+        self.magic_wand_closure_drawing = False
+        self.magic_wand_closure_start = None
+        self.magic_wand_closure_end = None
+        self.magic_wand_closure_dragged = False
+
+        self.magic_wand_polyline_active = False
+        self.magic_wand_polyline_points = []
+        self.magic_wand_polyline_hover_point = None
+
+        if self.magic_wand_closure_path_item is not None:
+            self.magic_wand_closure_path_item.setPath(QPainterPath())
+            self.magic_wand_closure_path_item.hide()
+
+    # ============== FIN LAZO Y VARITA MÁGICA ==============
+
     def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if self.text_move_session.handle_mouse_move(event):
             event.accept()
@@ -1193,6 +1648,21 @@ class Canvas(QGraphicsScene):
             return
         if self._path_reorder_drawing:
             self._extend_path_reorder_stroke(event.scenePos())
+            event.accept()
+            return
+
+        if self.magic_wand_closure_drawing:
+            self.extend_magic_wand_closure(event.scenePos())
+            event.accept()
+            return
+
+        if self.magic_wand_polyline_active:
+            self.update_magic_wand_polyline_hover(event.scenePos())
+            event.accept()
+            return
+
+        if self.lasso_drawing:
+            self.extend_lasso(event.scenePos())
             event.accept()
             return
         control = self.active_text_transform_control()
@@ -1250,6 +1720,7 @@ class Canvas(QGraphicsScene):
         
         elif self.scale_tool_mode:
             self.scale_tool.emit(event.scenePos())
+        # --- Magic Wand NATIVA de BT (1.5.17): hover preview (integrada)
         elif (
             self._magic_wand_hover_enabled
             and event.buttons() == Qt.MouseButton.NoButton
@@ -1273,6 +1744,8 @@ class Canvas(QGraphicsScene):
         self.cancel_shape_fill()
         self.alpha_mask_edit_session.deactivate()
         self.cancel_path_reorder()
+        self.cancel_lasso()
+        self.cancel_magic_wand_closure()
         self.end_scale_tool.emit()
 
     def selected_text_items(self, sort: bool = True) -> List[TextBlkItem]:
@@ -1339,6 +1812,36 @@ class Canvas(QGraphicsScene):
                 self.cancel_path_reorder()
                 event.accept()
                 return
+
+        btn_ = btn
+
+        # --- VARITA MÁGICA ---
+        if self.image_edit_mode == ImageEditMode.MagicWandTool and self.drawMode():
+            if btn_ == Qt.MouseButton.LeftButton and self.imgtrans_proj.img_valid:
+                image_pos = self.inpaintLayer.mapFromScene(event.scenePos())
+                mode = 2 if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 0
+                self.magic_wand_clicked.emit(QPointF(image_pos), mode)
+                event.accept()
+                return
+
+            if btn_ == Qt.MouseButton.RightButton and self.imgtrans_proj.img_valid:
+                image_pos = self.inpaintLayer.mapFromScene(event.scenePos())
+                self.magic_wand_clicked.emit(QPointF(image_pos), 3)
+                event.accept()
+                return
+
+        # --- HERRAMIENTA LAZO ---
+        # Botón izquierdo: nueva selección (o suma, si se mantiene Mayús).
+        # Botón derecho: resta de la selección pendiente.
+        if (
+            self.image_edit_mode == ImageEditMode.LassoTool
+            and self.drawMode()
+            and btn_ in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton)
+        ):
+            self.start_lasso(event.scenePos())
+            event.accept()
+            return
+
         control = self.active_text_transform_control()
         if control is not None and control.handle_modal_mouse_press(event):
             return
@@ -1406,8 +1909,13 @@ class Canvas(QGraphicsScene):
                 # user is drawing using the pen/inpainting tool
                 if self.scale_tool_mode:
                     self.begin_scale_tool.emit(event.scenePos())
+                # --- Magic Wand NATIVA de BT (1.5.17): INTEGRADA. Solo actúa en
+                #     paint/inpaint (self.painting) con la forma MagicWand; nuestra
+                #     varita (ImageEditMode.MagicWandTool) se atiende antes y retorna.
+                #     Señal RENOMBRADA (native_magic_wand_clicked) para no disparar
+                #     la nuestra con un bool en lugar de nuestro modo int.
                 elif self.painting and self.painting_shape == PenShape.MagicWand:
-                    self.magic_wand_clicked.emit(event.scenePos(), False)
+                    self.native_magic_wand_clicked.emit(event.scenePos(), False)
                     event.accept()
                     return
                 elif self.painting:
@@ -1415,11 +1923,12 @@ class Canvas(QGraphicsScene):
 
             elif btn == Qt.MouseButton.RightButton:
                 # user is drawing using eraser
+                # --- Magic Wand NATIVA de BT (1.5.17): INTEGRADA (ver nota arriba)
                 if self.painting and self.painting_shape == PenShape.MagicWand:
-                    self.magic_wand_clicked.emit(event.scenePos(), True)
+                    self.native_magic_wand_clicked.emit(event.scenePos(), True)
                     event.accept()
                     return
-                elif self.painting:
+                if self.painting:
                     erasing = self.image_edit_mode == ImageEditMode.PenTool
                     self._start_brush_stroke(event, self.erasing_pen, erasing)
                 else:   # rubber band selection
@@ -1460,6 +1969,25 @@ class Canvas(QGraphicsScene):
             self._finish_path_reorder_stroke()
             event.accept()
             return
+
+        if (
+            self.image_edit_mode == ImageEditMode.MagicWandTool
+            and self.magic_wand_closure_drawing
+            and btn == Qt.MouseButton.LeftButton
+        ):
+            self.finish_magic_wand_closure()
+            event.accept()
+            return
+
+        if (
+            self.image_edit_mode == ImageEditMode.LassoTool
+            and self.lasso_drawing
+            and btn in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton)
+        ):
+            self.finish_lasso(btn)
+            event.accept()
+            return
+
         control = self.active_text_transform_control()
         if control is not None and control.handle_modal_mouse_release(event):
             return
@@ -1514,6 +2042,22 @@ class Canvas(QGraphicsScene):
         return super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if (
+            self.image_edit_mode == ImageEditMode.MagicWandTool
+            and self.drawMode()
+            and self.magic_wand_polyline_active
+            and event.button() == Qt.MouseButton.LeftButton
+            and (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        ):
+            image_pos = self.inpaintLayer.mapFromScene(event.scenePos())
+            if self.magic_wand_polyline_points:
+                last_point = self.magic_wand_polyline_points[-1]
+                if self._magic_wand_points_are_separated(last_point, image_pos):
+                    self.magic_wand_polyline_points.append(QPointF(image_pos))
+            self.finish_magic_wand_polyline()
+            event.accept()
+            return
+
         if self._rubber_band_target == 'grid':
             self.hide_rubber_band()
         return super().mouseDoubleClickEvent(event)
@@ -1604,6 +2148,8 @@ class Canvas(QGraphicsScene):
         self.reset_brush_line()
         self.alpha_mask_edit_session.deactivate()
         self.cancel_path_reorder()
+        self.cancel_magic_wand_closure()
+        self.cancel_lasso()
         self.cancel_shape_fill()
         self.editing_textblkitem = None
         if self.stroke_img_item is not None:
@@ -1646,6 +2192,7 @@ class Canvas(QGraphicsScene):
             drawing_map = img
         self.drawingLayer.setPixmap(drawing_map)
 
+    # --- Magic Wand NATIVA de BT (1.5.17): INTEGRADA
     def set_magic_wand_hover_tracking(self, enabled: bool) -> None:
         # Keep QGraphicsView mouse tracking on so item hover cursors still work.
         self._magic_wand_hover_enabled = bool(enabled)
@@ -1721,9 +2268,17 @@ class Canvas(QGraphicsScene):
             delete_recover_act.setShortcut(QKeySequence("Ctrl+Shift+D"))
 
             menu.addSeparator()
+            uppercase_act = menu.addAction(self.tr("Convert to UPPERCASE"))
+            uppercase_act.setShortcut(QKeySequence("Ctrl+Shift+U"))
+            lowercase_act = menu.addAction(self.tr("Convert to lowercase"))
+            lowercase_act.setShortcut(QKeySequence("Ctrl+Shift+L"))
+            sentence_act = menu.addAction(self.tr("A modo oración"))
+            sentence_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
+            menu.addSeparator()
 
             format_act = menu.addAction(self.tr("Apply font formatting"))
             layout_act = menu.addAction(self.tr("Auto layout"))
+            defragment_act = menu.addAction(self.tr("Defragment lines"))
             angle_act = menu.addAction(self.tr("Reset Angle"))
             squeeze_act = menu.addAction(self.tr("Squeeze"))
             menu.addSeparator()
@@ -1749,6 +2304,14 @@ class Canvas(QGraphicsScene):
                 self.paste_src_signal.emit()
             elif rst == format_act:
                 self.format_textblks.emit()
+            elif rst == uppercase_act:
+                self.transform_textblks.emit("upper")
+            elif rst == lowercase_act:
+                self.transform_textblks.emit("lower")
+            elif rst == sentence_act:
+                self.transform_textblks.emit("sentence")
+            elif rst == defragment_act:
+                self.defragment_text_lines.emit()
             elif rst == layout_act:
                 self.layout_textblks.emit()
             elif rst == angle_act:
