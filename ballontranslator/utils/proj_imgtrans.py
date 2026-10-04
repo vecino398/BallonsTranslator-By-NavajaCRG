@@ -708,6 +708,13 @@ class ProjImgTrans:
         if set_img_failed:
             if len(self.pages) > 0:
                 self.set_current_img_byidx(0)
+
+        # Restaurar idiomas guardados en el JSON del proyecto
+        if 'translate_source' in proj_dict and proj_dict['translate_source']:
+            pcfg.module.translate_source = proj_dict['translate_source']
+        if 'translate_target' in proj_dict and proj_dict['translate_target']:
+            pcfg.module.translate_target = proj_dict['translate_target']
+
         self._load_identity = object()
 
     def get_page_progress(self, pagename: str):
@@ -1026,6 +1033,8 @@ class ProjImgTrans:
             'pages': pages,
             'current_img': self.current_img,
             'image_info': image_info,
+            'translate_source': pcfg.module.translate_source,
+            'translate_target': pcfg.module.translate_target,
         }
         memory_record = self.get_llm_compact_memory()
         if memory_record is not None:
