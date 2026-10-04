@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Cuerpo de la letra T (Barra superior ensanchada un poco más) -->
+  <path opacity=".4" fill="#697187" d="M80 64 c0-17.7 14.3-32 32-32 h240 c17.7 0 32 14.3 32 32 s-14.3 32-32 32 h-88 v352 c0 17.7-14.3 32-32 32 s-32-14.3-32-32 v-352 h-88 c-17.7 0-32-14.3-32-32 z" />
+  
+  <!-- Flecha hacia abajo (Mantiene su posición segura a la derecha) -->
+  <path fill="#697187" d="M380 448 l-64-64 h32 v-256 h64 v256 h32 z" />
+</svg>
