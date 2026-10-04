@@ -99,7 +99,10 @@ class LLMContextEditor(QSplitter):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
-        self.setMinimumWidth(300)
+        # No fijamos un ancho mínimo aquí: el mínimo real de esta columna lo
+        # marca el propio page_widget (leftStackWidget), tal como en 1.5.13.
+        # Un setMinimumWidth(300) fijo impedía minimizar el panel de páginas
+        # tanto como antes, incluso con Resumen/Memoria plegados.
         self._page_widget = page_widget
         self._project = project
         self._page_key = project.current_img if project is not None else None
