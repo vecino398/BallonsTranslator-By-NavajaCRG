@@ -1518,7 +1518,7 @@ class TextBlkItem(QGraphicsTextItem):
             self.block_change_signal = block_change_signal
             self.repainting = was_repainting
         self.repaint_background()
-
+        
     def insert_from_mime_data(self, mime: QMimeData) -> bool:
         cursor = self.textCursor()
         inserted = insert_rich_text_mime(
@@ -1861,6 +1861,35 @@ class TextBlkItem(QGraphicsTextItem):
         cfmt.setFontUnderline(value)
         self.set_cursor_cfmt(cursor, cfmt, True)
         self._after_set_ffmt(cursor, repaint_background, restore_cursor, **after_kwargs)
+
+    def setFontStrikeOut(self, value: bool, repaint_background: bool = True, set_selected: bool = False, restore_cursor: bool = False):
+        cursor, after_kwargs = self._before_set_ffmt(set_selected, restore_cursor)
+        cfmt = QTextCharFormat()
+        cfmt.setFontStrikeOut(value)
+        self.set_cursor_cfmt(cursor, cfmt, True)
+        self._after_set_ffmt(cursor, repaint_background, restore_cursor, **after_kwargs)
+
+    def setSuperscript(self, value: bool, repaint_background: bool = True, set_selected: bool = False, restore_cursor: bool = False):
+        cursor, after_kwargs = self._before_set_ffmt(set_selected, restore_cursor)
+        cfmt = QTextCharFormat()
+        align = QTextCharFormat.VerticalAlignment.AlignSuperScript if value else QTextCharFormat.VerticalAlignment.AlignNormal
+        cfmt.setVerticalAlignment(align)
+        self.set_cursor_cfmt(cursor, cfmt, True)
+        self._after_set_ffmt(cursor, repaint_background, restore_cursor, **after_kwargs)
+
+    def setSubscript(self, value: bool, repaint_background: bool = True, set_selected: bool = False, restore_cursor: bool = False):
+        cursor, after_kwargs = self._before_set_ffmt(set_selected, restore_cursor)
+        cfmt = QTextCharFormat()
+        align = QTextCharFormat.VerticalAlignment.AlignSubScript if value else QTextCharFormat.VerticalAlignment.AlignNormal
+        cfmt.setVerticalAlignment(align)
+        self.set_cursor_cfmt(cursor, cfmt, True)
+        self._after_set_ffmt(cursor, repaint_background, restore_cursor, **after_kwargs)
+
+    def get_selection_char_format(self) -> QTextCharFormat:
+        """Formato de carácter en la selección actual (o bajo el cursor si no hay selección).
+        Útil para que los botones de estilo sepan si deben activar o desactivar el atributo."""
+        cursor = self.textCursor()
+        return cursor.charFormat()
 
     def _active_char_format(self) -> QTextCharFormat:
         """Return a direction-independent format for panel synchronization."""
