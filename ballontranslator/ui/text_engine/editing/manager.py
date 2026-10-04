@@ -33,7 +33,7 @@ from .commands import (
     propagate_user_edit,
 )
 from ..formatting.panel import FontFormatPanel
-from ballontranslator.utils.config import pcfg
+from ballontranslator.utils.config import pcfg, normalize_text_case
 from ballontranslator.utils import shared
 from ballontranslator.utils.imgproc_utils import extract_ballon_region, get_block_mask
 from ballontranslator.utils.text_processing import seg_text, is_cjk
@@ -386,6 +386,8 @@ class SceneTextManager(QObject):
         self.canvas.layout_textblks.connect(self.onAutoLayoutTextblks)
         self.canvas.reset_angle.connect(self.onResetAngle)
         self.canvas.squeeze_blk.connect(self.onSqueezeBlk)
+        self.canvas.transform_textblks.connect(self.onTransformTextblks)
+        self.canvas.defragment_text_lines.connect(self.onDefragmentTextLines)
         self.canvas.path_reorder_finished.connect(
             self.on_path_reorder_finished
         )
@@ -546,6 +548,7 @@ class SceneTextManager(QObject):
                 blk.translation = ''
             blk_item = TextBlkItem(blk, len(self.textblk_item_list), show_rect=self.canvas.textblock_mode)
             if translation:
+                translation = self._normalizar_traduccion(translation)
                 blk.translation = translation
                 rst = self.layout_textblk(blk_item, text=translation)
                 if rst is None:
@@ -1149,9 +1152,17 @@ class SceneTextManager(QObject):
     def on_push_textitem_undostack(self, num_steps: int, is_formatting: bool) -> None:
         blkitem: TextBlkItem = self.sender()
         e_trans = self.pairwidget_list[blkitem.idx].e_trans if not is_formatting else None
-        self.canvas.push_undo_command(TextItemEditCommand(
-            blkitem, e_trans, num_steps, self.textpanel.formatpanel,
-        ))
+        # Fork: los cambios de formato van SIEMPRE a la pila de texto (push_text_command),
+        # sin depender del modo de edición activo. En la 1.5.18 el estado de guardado lo
+        # lleva el estado "limpio" del QUndoStack, así que ya no existe update_pushed_step.
+        if is_formatting:
+            self.canvas.push_text_command(
+                TextItemEditCommand(blkitem, e_trans, num_steps, self.textpanel.formatpanel)
+            )
+        else:
+            self.canvas.push_undo_command(
+                TextItemEditCommand(blkitem, e_trans, num_steps, self.textpanel.formatpanel)
+            )
 
     def on_push_edit_stack(self, num_steps: int) -> None:
         edit: Union[TransTextEdit, SourceTextEdit] = self.sender()
@@ -1318,7 +1329,15 @@ class SceneTextManager(QObject):
         for blk_item, trans_pair in zip(self.textblk_item_list, self.pairwidget_list):
             if not blk_item.document().isEmpty():
                 blk_item.blk.rich_text = blk_item.toHtml()
-                blk_item.blk.translation = blk_item.toPlainText()
+                # Leer de e_trans (texto plano con delimitadores PS) en lugar
+                # del canvas, que convierte delimitadores a formato HTML y los pierde.
+                trad = trans_pair.e_trans.toPlainText()
+                blk_item.blk.translation = trad
+                # Si hay delimitadores PS en el texto, limpiar rich_text para
+                # que al recargar BT use el texto plano y conserve los delimitadores.
+                _PS_DELIMS = ('++', '+', '__', '~~', '^', '¬')
+                if any(d in trad for d in _PS_DELIMS):
+                    blk_item.blk.rich_text = ''
             else:
                 blk_item.blk.rich_text = ''
                 blk_item.blk.translation = ''
@@ -1329,6 +1348,15 @@ class SceneTextManager(QObject):
         # Translation workers read this list while Qt exports the scene. Publish
         # its complete membership at once, preserving existing list references.
         cbl[:] = updated_blocks
+
+    def updateTranslation(self):
+        for blk_item, transwidget in zip(self.textblk_item_list, self.pairwidget_list):
+            texto = self._normalizar_traduccion(blk_item.blk.translation)
+            blk_item.blk.translation = texto
+            transwidget.e_trans.setPlainText(texto)
+            blk_item.setPlainText(texto)
+            blk_item.set_fontformat(self.formatpanel.global_format)
+        self.canvas.clear_text_stack()
 
     def showTextblkItemRect(self, draw_rect: bool):
         self.canvas.textblock_mode = bool(draw_rect)
@@ -1356,6 +1384,32 @@ class SceneTextManager(QObject):
 
     def on_page_replace_all(self):
         self.canvas.push_undo_command(PageReplaceAllCommand(self.canvas.search_widget))
+
+    def onTransformTextblks(self, mode: str):
+        """Transforma el texto de los bloques seleccionados."""
+        selected_blks = self.canvas.selected_text_items()
+        if not selected_blks:
+            return
+        etrans_list = [self.pairwidget_list[blkitem.idx].e_trans for blkitem in selected_blks]
+        from .commands import TextTransformCommand
+        self.canvas.push_undo_command(TextTransformCommand(selected_blks, etrans_list, mode))
+
+    def onDefragmentTextLines(self):
+        """Une las líneas fragmentadas de los bloques seleccionados."""
+        selected_blks = self.canvas.selected_text_items()
+        if not selected_blks:
+            return
+        etrans_list = [self.pairwidget_list[blkitem.idx].e_trans for blkitem in selected_blks]
+        from .commands import TextTransformCommand
+        self.canvas.push_undo_command(TextTransformCommand(selected_blks, etrans_list, "defragment"))
+
+    def _normalizar_traduccion(self, texto: str) -> str:
+        """Desfragmenta líneas y aplica el modo de capitalización configurado
+        en pcfg.let_text_case_mode. Delegado en la función compartida
+        normalize_text_case (config.py) para que el comportamiento sea
+        idéntico al del flujo en vivo (RunBlkTransCommand en
+        drawing_commands.py)."""
+        return normalize_text_case(texto)
 
 def get_text_size(fm: QFontMetricsF, text: str) -> Tuple[int, int]:
     brt = fm.tightBoundingRect(text)
